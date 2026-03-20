@@ -19,7 +19,6 @@ package org.apache.rocketmq.proxy.config;
 
 import java.net.URL;
 import org.assertj.core.util.Strings;
-
 import org.junit.After;
 import org.junit.Before;
 
@@ -44,7 +43,7 @@ public class InitConfigTest {
     }
 
     @After
-    public void after() {
+    public void after() throws Exception {
         System.clearProperty(RMQ_PROXY_HOME);
     }
 }

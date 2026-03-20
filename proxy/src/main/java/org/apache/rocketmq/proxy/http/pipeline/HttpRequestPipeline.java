@@ -23,10 +23,10 @@ public interface HttpRequestPipeline {
 
     void execute(ProxyContext context, FullHttpRequest request);
 
-    default HttpRequestPipeline pipe(HttpRequestPipeline source) {
+    default HttpRequestPipeline pipe(HttpRequestPipeline next) {
         return (ctx, request) -> {
-            source.execute(ctx, request);
             execute(ctx, request);
+            next.execute(ctx, request);
         };
     }
 }

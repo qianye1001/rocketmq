@@ -46,7 +46,7 @@ public class TransactionDataManagerTest extends InitConfigTest {
     }
 
     @After
-    public void after() {
+    public void after() throws Exception {
         super.after();
     }
 

@@ -72,12 +72,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         ProxyContext proxyContext = ProxyContext.create();
 
         // set remote/local address
-        InetSocketAddress remoteAddr = (InetSocketAddress) ctx.channel().remoteAddress();
-        InetSocketAddress localAddr = (InetSocketAddress) ctx.channel().localAddress();
-        if (remoteAddr != null) {
+        if (ctx.channel().remoteAddress() instanceof InetSocketAddress) {
+            InetSocketAddress remoteAddr = (InetSocketAddress) ctx.channel().remoteAddress();
             proxyContext.setRemoteAddress(remoteAddr.getAddress().getHostAddress() + ":" + remoteAddr.getPort());
         }
-        if (localAddr != null) {
+        if (ctx.channel().localAddress() instanceof InetSocketAddress) {
+            InetSocketAddress localAddr = (InetSocketAddress) ctx.channel().localAddress();
             proxyContext.setLocalAddress(localAddr.getAddress().getHostAddress() + ":" + localAddr.getPort());
         }
         proxyContext.setChannel(ctx.channel());

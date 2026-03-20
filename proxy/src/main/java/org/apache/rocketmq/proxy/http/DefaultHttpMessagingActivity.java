@@ -316,7 +316,7 @@ public class DefaultHttpMessagingActivity implements HttpMessagingActivity {
         @Override
         public AddressableMessageQueue select(ProxyContext ctx, MessageQueueView messageQueueView) {
             try {
-                return messageQueueView.getWriteSelector().selectOneByPipeline(false);
+                return messageQueueView.getWriteSelector().selectOneByPipeline(true);
             } catch (Exception e) {
                 return null;
             }
