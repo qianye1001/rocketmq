@@ -280,6 +280,15 @@ public class ProxyConfig implements ConfigFile {
 
     private boolean enableBatchAck = false;
 
+    // HTTP server
+    private boolean enableHttpServer = false;
+    private int httpServerPort = 8082;
+    private int httpThreadPoolNums = 4 * PROCESSOR_NUMBER;
+    private int httpThreadPoolQueueCapacity = 50000;
+    private int httpMaxContentLength = 4 * 1024 * 1024;
+    private int httpIdleTimeoutSeconds = 120;
+    private long httpLongPollingTimeoutMillis = Duration.ofSeconds(20).toMillis();
+
     @Override
     public void initData() {
         parseDelayLevel();
@@ -1580,5 +1589,61 @@ public class ProxyConfig implements ConfigFile {
 
     public void setReturnHandleGroupThreadPoolNums(int returnHandleGroupThreadPoolNums) {
         this.returnHandleGroupThreadPoolNums = returnHandleGroupThreadPoolNums;
+    }
+
+    public boolean isEnableHttpServer() {
+        return enableHttpServer;
+    }
+
+    public void setEnableHttpServer(boolean enableHttpServer) {
+        this.enableHttpServer = enableHttpServer;
+    }
+
+    public int getHttpServerPort() {
+        return httpServerPort;
+    }
+
+    public void setHttpServerPort(int httpServerPort) {
+        this.httpServerPort = httpServerPort;
+    }
+
+    public int getHttpThreadPoolNums() {
+        return httpThreadPoolNums;
+    }
+
+    public void setHttpThreadPoolNums(int httpThreadPoolNums) {
+        this.httpThreadPoolNums = httpThreadPoolNums;
+    }
+
+    public int getHttpThreadPoolQueueCapacity() {
+        return httpThreadPoolQueueCapacity;
+    }
+
+    public void setHttpThreadPoolQueueCapacity(int httpThreadPoolQueueCapacity) {
+        this.httpThreadPoolQueueCapacity = httpThreadPoolQueueCapacity;
+    }
+
+    public int getHttpMaxContentLength() {
+        return httpMaxContentLength;
+    }
+
+    public void setHttpMaxContentLength(int httpMaxContentLength) {
+        this.httpMaxContentLength = httpMaxContentLength;
+    }
+
+    public int getHttpIdleTimeoutSeconds() {
+        return httpIdleTimeoutSeconds;
+    }
+
+    public void setHttpIdleTimeoutSeconds(int httpIdleTimeoutSeconds) {
+        this.httpIdleTimeoutSeconds = httpIdleTimeoutSeconds;
+    }
+
+    public long getHttpLongPollingTimeoutMillis() {
+        return httpLongPollingTimeoutMillis;
+    }
+
+    public void setHttpLongPollingTimeoutMillis(long httpLongPollingTimeoutMillis) {
+        this.httpLongPollingTimeoutMillis = httpLongPollingTimeoutMillis;
     }
 }

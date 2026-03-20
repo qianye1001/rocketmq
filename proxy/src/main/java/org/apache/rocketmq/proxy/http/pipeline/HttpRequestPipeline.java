@@ -14,23 +14,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.rocketmq.proxy.http.pipeline;
 
-package org.apache.rocketmq.proxy.processor.channel;
+import io.netty.handler.codec.http.FullHttpRequest;
+import org.apache.rocketmq.proxy.common.ProxyContext;
 
-public enum ChannelProtocolType {
-    UNKNOWN("unknown"),
-    GRPC_V2("grpc_v2"),
-    GRPC_V1("grpc_v1"),
-    REMOTING("remoting"),
-    HTTP("http");
+public interface HttpRequestPipeline {
 
-    private final String name;
+    void execute(ProxyContext context, FullHttpRequest request);
 
-    ChannelProtocolType(String name) {
-        this.name = name;
-    }
-
-    public String getName() {
-        return name;
+    default HttpRequestPipeline pipe(HttpRequestPipeline source) {
+        return (ctx, request) -> {
+            source.execute(ctx, request);
+            execute(ctx, request);
+        };
     }
 }

@@ -140,4 +140,13 @@ public class ProxyContext {
         return this.getVal(ContextVariable.NAMESPACE);
     }
 
+    public ProxyContext setRequestId(String requestId) {
+        this.withVal(ContextVariable.REQUEST_ID, requestId);
+        return this;
+    }
+
+    public String getRequestId() {
+        return this.getVal(ContextVariable.REQUEST_ID);
+    }
+
 }

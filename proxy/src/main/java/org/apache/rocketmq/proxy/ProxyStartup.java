@@ -40,6 +40,7 @@ import org.apache.rocketmq.proxy.config.ProxyConfig;
 import org.apache.rocketmq.proxy.grpc.GrpcServer;
 import org.apache.rocketmq.proxy.grpc.GrpcServerBuilder;
 import org.apache.rocketmq.proxy.grpc.v2.GrpcMessagingApplication;
+import org.apache.rocketmq.proxy.http.HttpServer;
 import org.apache.rocketmq.proxy.metrics.ProxyMetricsManager;
 import org.apache.rocketmq.proxy.processor.DefaultMessagingProcessor;
 import org.apache.rocketmq.proxy.processor.MessagingProcessor;
@@ -94,6 +95,12 @@ public class ProxyStartup {
 
             RemotingProtocolServer remotingServer = new RemotingProtocolServer(messagingProcessor, tlsCertificateManager);
             PROXY_START_AND_SHUTDOWN.appendStartAndShutdown(remotingServer);
+
+            // create HTTP server if enabled
+            if (ConfigurationManager.getProxyConfig().isEnableHttpServer()) {
+                HttpServer httpServer = new HttpServer(messagingProcessor);
+                PROXY_START_AND_SHUTDOWN.appendStartAndShutdown(httpServer);
+            }
 
             // start servers one by one.
             PROXY_START_AND_SHUTDOWN.start();
