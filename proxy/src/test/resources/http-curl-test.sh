@@ -20,7 +20,7 @@
 HOST="${1:-127.0.0.1}"
 PORT="${2:-8082}"
 BASE_URL="http://${HOST}:${PORT}"
-TOPIC="CurlTestTopic"
+TOPIC="TestHttpTopic"
 CONSUMER_GROUP="CurlTestGroup"
 PRODUCER_GROUP="CurlTestProducer"
 
