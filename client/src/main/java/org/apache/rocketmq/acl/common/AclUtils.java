@@ -17,6 +17,12 @@
 package org.apache.rocketmq.acl.common;
 
 import com.alibaba.fastjson2.JSONObject;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.InputStream;
+import java.util.Collection;
+import java.util.Map;
+import java.util.SortedMap;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
@@ -25,12 +31,6 @@ import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.yaml.snakeyaml.Yaml;
 
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.InputStream;
-import java.util.Map;
-import java.util.SortedMap;
-
 import static org.apache.rocketmq.acl.common.SessionCredentials.CHARSET;
 
 public class AclUtils {
@@ -38,9 +38,13 @@ public class AclUtils {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.COMMON_LOGGER_NAME);
 
     public static byte[] combineRequestContent(RemotingCommand request, SortedMap<String, String> fieldsMap) {
+        return combineRequestContent(request, fieldsMap.entrySet());
+    }
+
+    public static byte[] combineRequestContent(RemotingCommand request, Collection<Map.Entry<String, String>> entries) {
         try {
             StringBuilder sb = new StringBuilder();
-            for (Map.Entry<String, String> entry : fieldsMap.entrySet()) {
+            for (Map.Entry<String, String> entry : entries) {
                 if (!SessionCredentials.SIGNATURE.equals(entry.getKey())) {
                     sb.append(entry.getValue());
                 }

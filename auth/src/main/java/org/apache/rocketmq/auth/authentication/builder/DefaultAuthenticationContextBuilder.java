@@ -20,10 +20,10 @@ import com.google.protobuf.GeneratedMessageV3;
 import io.grpc.Metadata;
 import io.netty.channel.ChannelHandlerContext;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.SortedMap;
-import java.util.TreeMap;
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.codec.binary.Hex;
@@ -109,18 +109,22 @@ public class DefaultAuthenticationContextBuilder implements AuthenticationContex
         }
         result.setUsername(fields.get(SessionCredentials.ACCESS_KEY));
         result.setSignature(fields.get(SessionCredentials.SIGNATURE));
+
         // Content
-        SortedMap<String, String> map = new TreeMap<>();
+        boolean oldVersion = request.getVersion() <= MQVersion.Version.V4_9_3.ordinal();
+        List<Map.Entry<String, String>> filteredEntries = new ArrayList<>(fields.size());
         for (Map.Entry<String, String> entry : fields.entrySet()) {
-            if (request.getVersion() <= MQVersion.Version.V4_9_3.ordinal() &&
-                MixAll.UNIQUE_MSG_QUERY_FLAG.equals(entry.getKey())) {
+            String key = entry.getKey();
+            if (oldVersion &&
+                MixAll.UNIQUE_MSG_QUERY_FLAG.equals(key)) {
                 continue;
             }
-            if (!SessionCredentials.SIGNATURE.equals(entry.getKey())) {
-                map.put(entry.getKey(), entry.getValue());
+            if (!SessionCredentials.SIGNATURE.equals(key)) {
+                filteredEntries.add(entry);
             }
         }
-        result.setContent(AclUtils.combineRequestContent(request, map));
+        filteredEntries.sort(Map.Entry.comparingByKey());
+        result.setContent(AclUtils.combineRequestContent(request, filteredEntries));
         return result;
     }
 
