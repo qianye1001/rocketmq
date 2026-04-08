@@ -21,6 +21,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
+import java.util.Map;
 import org.apache.rocketmq.common.TopicFilterType;
 import org.apache.rocketmq.common.sysflag.MessageSysFlag;
 
@@ -247,6 +248,10 @@ public class MessageExt extends Message {
 
     public void setPreparedTransactionOffset(long preparedTransactionOffset) {
         this.preparedTransactionOffset = preparedTransactionOffset;
+    }
+
+    public void setProperties(Map<String, String> properties) {
+        super.setProperties(properties);
     }
 
     /**

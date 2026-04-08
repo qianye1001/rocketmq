@@ -21,6 +21,7 @@ import io.netty.channel.ChannelHandlerContext;
 import java.nio.ByteBuffer;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.broker.client.ClientChannelInfo;
+import org.apache.rocketmq.broker.client.ConsumerManager;
 import org.apache.rocketmq.broker.client.ProducerManager;
 import org.apache.rocketmq.client.impl.ClientRemotingProcessor;
 import org.apache.rocketmq.common.constant.LoggerName;
@@ -40,9 +41,9 @@ import org.apache.rocketmq.remoting.protocol.header.NotifyUnsubscribeLiteRequest
 public class ProxyClientRemotingProcessor extends ClientRemotingProcessor {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
     private final ProducerManager producerManager;
-    private final ClusterConsumerManager consumerManager;
+    private final ConsumerManager consumerManager;
 
-    public ProxyClientRemotingProcessor(ProducerManager producerManager, ClusterConsumerManager consumerManager) {
+    public ProxyClientRemotingProcessor(ProducerManager producerManager, ConsumerManager consumerManager) {
         super(null);
         this.producerManager = producerManager;
         this.consumerManager = consumerManager;
