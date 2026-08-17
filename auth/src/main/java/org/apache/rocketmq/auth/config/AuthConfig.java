@@ -20,7 +20,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.rocketmq.common.annotation.SensitiveConfig;
+import org.apache.rocketmq.common.annotation.Sensitive;
 
 public class AuthConfig implements Cloneable {
 
@@ -40,10 +40,10 @@ public class AuthConfig implements Cloneable {
 
     private volatile WhitelistSnapshot authenticationWhitelist;
 
-    @SensitiveConfig
+    @Sensitive
     private String initAuthenticationUser;
 
-    @SensitiveConfig
+    @Sensitive
     private String innerClientAuthenticationCredentials;
 
     private boolean authorizationEnabled = false;
