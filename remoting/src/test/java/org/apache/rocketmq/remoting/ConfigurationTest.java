@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.rocketmq.remoting;
 
 import java.util.Properties;
@@ -23,6 +24,7 @@ import org.junit.Test;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotSame;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 public class ConfigurationTest {
 
@@ -42,5 +44,22 @@ public class ConfigurationTest {
 
     private static class TestConfig {
         private String customPath = "initial";
+    }
+
+
+    @Test
+    public void testRegisterConfigRedactsSensitiveReplacement() {
+        Logger logger = mock(Logger.class);
+        Configuration configuration = new Configuration(logger);
+        Properties oldConfig = new Properties();
+        oldConfig.setProperty("tlsKeyPassword", "old-secret");
+        Properties newConfig = new Properties();
+        newConfig.setProperty("tlsKeyPassword", "new-secret");
+
+        configuration.registerConfig(oldConfig);
+        configuration.registerConfig(newConfig);
+
+        verify(logger).info("Replace, key: {}, value: {} -> {}",
+            "tlsKeyPassword", "ol******et", "ne******et");
     }
 }
