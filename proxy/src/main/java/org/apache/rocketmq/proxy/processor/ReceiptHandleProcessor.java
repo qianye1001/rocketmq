@@ -32,6 +32,7 @@ import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.RenewEvent;
+import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.service.ServiceManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.receipt.DefaultReceiptHandleManager;
@@ -75,16 +76,34 @@ public class ReceiptHandleProcessor extends AbstractProcessor {
 
     protected void batchChangeInvisibleTime(ProxyContext context, RenewEvent event) {
         List<MessageReceiptHandle> messageReceiptHandleList = event.getMessageReceiptHandleList();
-        List<Long> renewTimeList = event.getRenewTimeList();
-        List<CompletableFuture<AckResult>> futureList = event.getFutureList();
-        Map<String, List<Integer>> indexesByGroupAndTopic = new HashMap<>();
+        Map<String, List<Integer>> indexesByBrokerAndTopic = new HashMap<>();
         for (int i = 0; i < messageReceiptHandleList.size(); i++) {
             MessageReceiptHandle messageReceiptHandle = messageReceiptHandleList.get(i);
-            String key = messageReceiptHandle.getGroup() + RENEW_BATCH_KEY_SEPARATOR + messageReceiptHandle.getTopic();
-            indexesByGroupAndTopic.computeIfAbsent(key, ignored -> new ArrayList<>()).add(i);
+            ReceiptHandle handle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
+            String key = messageReceiptHandle.getGroup() + RENEW_BATCH_KEY_SEPARATOR + messageReceiptHandle.getTopic()
+                + RENEW_BATCH_KEY_SEPARATOR + handle.getBrokerName() + RENEW_BATCH_KEY_SEPARATOR
+                + handle.getRealTopic(messageReceiptHandle.getTopic(), messageReceiptHandle.getGroup());
+            indexesByBrokerAndTopic.computeIfAbsent(key, ignored -> new ArrayList<>()).add(i);
         }
 
-        for (List<Integer> indexes : indexesByGroupAndTopic.values()) {
+        int batchMaxNum = Math.max(1, ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum());
+        for (List<Integer> indexes : indexesByBrokerAndTopic.values()) {
+            CompletableFuture<Void> brokerFuture = CompletableFuture.completedFuture(null);
+            for (int fromIndex = 0; fromIndex < indexes.size(); fromIndex += batchMaxNum) {
+                List<Integer> batchIndexes = indexes.subList(fromIndex, Math.min(indexes.size(), fromIndex + batchMaxNum));
+                // Complete this chunk's handle futures before sending the next chunk to the same broker.
+                // Other brokers and real topics can finish independently, without delaying these handles' ACKs.
+                brokerFuture = brokerFuture.thenCompose(ignored -> changeInvisibleTimeBatch(context, event, batchIndexes));
+            }
+        }
+    }
+
+    protected CompletableFuture<Void> changeInvisibleTimeBatch(ProxyContext context, RenewEvent event,
+        List<Integer> indexes) {
+        List<MessageReceiptHandle> messageReceiptHandleList = event.getMessageReceiptHandleList();
+        List<Long> renewTimeList = event.getRenewTimeList();
+        List<CompletableFuture<AckResult>> futureList = event.getFutureList();
+        try {
             MessageReceiptHandle firstHandle = messageReceiptHandleList.get(indexes.get(0));
             List<ReceiptHandleMessage> handleMessageList = new ArrayList<>(indexes.size());
             for (Integer index : indexes) {
@@ -95,7 +114,7 @@ public class ReceiptHandleProcessor extends AbstractProcessor {
                     messageReceiptHandle.getLiteTopic(),
                     renewTimeList.get(index)));
             }
-            messagingProcessor.batchChangeInvisibleTime(
+            return messagingProcessor.batchChangeInvisibleTime(
                     context,
                     handleMessageList,
                     firstHandle.getGroup(),
@@ -103,14 +122,14 @@ public class ReceiptHandleProcessor extends AbstractProcessor {
                     renewTimeList.get(indexes.get(0)),
                     MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
                     false)
-                .whenComplete((results, throwable) -> {
-                    if (throwable != null) {
-                        indexes.forEach(index -> futureList.get(index).completeExceptionally(throwable));
-                        return;
-                    }
+                .handle((results, throwable) -> {
                     for (int i = 0; i < indexes.size(); i++) {
                         CompletableFuture<AckResult> future = futureList.get(indexes.get(i));
-                        if (results == null || i >= results.size()) {
+                        if (throwable != null) {
+                            future.completeExceptionally(throwable);
+                            continue;
+                        }
+                        if (results == null || i >= results.size() || results.get(i) == null) {
                             future.completeExceptionally(new IllegalStateException("batch change invisible time result missing"));
                             continue;
                         }
@@ -121,7 +140,11 @@ public class ReceiptHandleProcessor extends AbstractProcessor {
                             future.complete(result.getAckResult());
                         }
                     }
+                    return null;
                 });
+        } catch (Throwable t) {
+            indexes.forEach(index -> futureList.get(index).completeExceptionally(t));
+            return CompletableFuture.completedFuture(null);
         }
     }
 
