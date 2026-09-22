@@ -17,6 +17,7 @@
 
 package org.apache.rocketmq.remoting;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -208,8 +209,13 @@ public class Configuration {
 
             try {
                 String allConfigs = getAllConfigsInternal();
-
-                MixAll.string2File(allConfigs, getStorePath());
+                String storePath = getStorePath();
+                File configFile = new File(storePath);
+                if (!checkWritePermission(configFile)
+                    || configFile.exists() && !checkWritePermission(new File(storePath + ".bak"))) {
+                    return;
+                }
+                MixAll.string2File(allConfigs, storePath);
             } catch (IOException e) {
                 log.error("persist string2File error, ", e);
             } finally {
@@ -218,6 +224,18 @@ public class Configuration {
         } catch (InterruptedException e) {
             log.error("persist lock error");
         }
+    }
+
+    private boolean checkWritePermission(File file) {
+        File existingPath = file.getAbsoluteFile();
+        while (!existingPath.exists() && existingPath.getParentFile() != null) {
+            existingPath = existingPath.getParentFile();
+        }
+        if (!existingPath.canWrite()) {
+            log.warn("Skip persisting configuration to {}: {} is not writable", file, existingPath);
+            return false;
+        }
+        return true;
     }
 
     public String getAllConfigsFormatString() {
