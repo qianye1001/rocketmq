@@ -15,10 +15,9 @@
  * limitations under the License.
  */
 
-package org.apache.rocketmq.proxy.processor;
+package org.apache.rocketmq.proxy.common;
 
 import org.apache.rocketmq.client.consumer.AckResult;
-import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 
 public class BatchChangeInvisibleTimeResult {

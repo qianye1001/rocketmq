@@ -20,17 +20,14 @@ package org.apache.rocketmq.proxy.common;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import org.apache.rocketmq.client.consumer.AckResult;
 
+/** A single broker's renewal batch. Results correspond to handles in input order. */
 public class RenewEvent {
-    protected ReceiptHandleGroupKey key;
-    protected MessageReceiptHandle messageReceiptHandle;
-    protected List<MessageReceiptHandle> messageReceiptHandleList;
-    protected long renewTime;
-    protected List<Long> renewTimeList;
-    protected EventType eventType;
-    protected CompletableFuture<AckResult> future;
-    protected List<CompletableFuture<AckResult>> futureList;
+    private final ReceiptHandleGroupKey key;
+    private final List<MessageReceiptHandle> messageReceiptHandleList;
+    private final List<Long> renewTimeList;
+    private final EventType eventType;
+    private final CompletableFuture<List<BatchChangeInvisibleTimeResult>> future = new CompletableFuture<>();
 
     public enum EventType {
         RENEW,
@@ -39,44 +36,24 @@ public class RenewEvent {
     }
 
     public RenewEvent(ReceiptHandleGroupKey key, MessageReceiptHandle messageReceiptHandle, long renewTime,
-        EventType eventType, CompletableFuture<AckResult> future) {
-        this.key = key;
-        this.messageReceiptHandle = messageReceiptHandle;
-        this.messageReceiptHandleList = Collections.singletonList(messageReceiptHandle);
-        this.renewTime = renewTime;
-        this.renewTimeList = Collections.singletonList(renewTime);
-        this.eventType = eventType;
-        this.future = future;
-        this.futureList = Collections.singletonList(future);
+        EventType eventType) {
+        this(key, Collections.singletonList(messageReceiptHandle), Collections.singletonList(renewTime), eventType);
     }
 
     public RenewEvent(ReceiptHandleGroupKey key, List<MessageReceiptHandle> messageReceiptHandleList,
-        List<Long> renewTimeList, EventType eventType, List<CompletableFuture<AckResult>> futureList) {
+        List<Long> renewTimeList, EventType eventType) {
         this.key = key;
         this.messageReceiptHandleList = messageReceiptHandleList;
-        this.messageReceiptHandle = messageReceiptHandleList == null || messageReceiptHandleList.isEmpty() ?
-            null : messageReceiptHandleList.get(0);
         this.renewTimeList = renewTimeList;
-        this.renewTime = renewTimeList == null || renewTimeList.isEmpty() ? 0 : renewTimeList.get(0);
         this.eventType = eventType;
-        this.futureList = futureList;
-        this.future = futureList == null || futureList.isEmpty() ? null : futureList.get(0);
     }
 
     public ReceiptHandleGroupKey getKey() {
         return key;
     }
 
-    public MessageReceiptHandle getMessageReceiptHandle() {
-        return messageReceiptHandle;
-    }
-
     public List<MessageReceiptHandle> getMessageReceiptHandleList() {
         return messageReceiptHandleList;
-    }
-
-    public long getRenewTime() {
-        return renewTime;
     }
 
     public List<Long> getRenewTimeList() {
@@ -87,11 +64,7 @@ public class RenewEvent {
         return eventType;
     }
 
-    public CompletableFuture<AckResult> getFuture() {
+    public CompletableFuture<List<BatchChangeInvisibleTimeResult>> getFuture() {
         return future;
-    }
-
-    public List<CompletableFuture<AckResult>> getFutureList() {
-        return futureList;
     }
 }

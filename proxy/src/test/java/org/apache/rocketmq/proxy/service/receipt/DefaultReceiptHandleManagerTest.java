@@ -21,6 +21,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.local.LocalChannel;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -34,19 +35,21 @@ import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.state.StateEventListener;
-import org.apache.rocketmq.proxy.common.RenewEvent;
+import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.common.ContextVariable;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.common.ReceiptHandleGroup;
+import org.apache.rocketmq.proxy.common.ReceiptHandleGroupKey;
+import org.apache.rocketmq.proxy.common.RenewEvent;
 import org.apache.rocketmq.proxy.common.RenewStrategyPolicy;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.config.ProxyConfig;
 import org.apache.rocketmq.proxy.processor.MessagingProcessor;
-import org.apache.rocketmq.proxy.common.ReceiptHandleGroupKey;
 import org.apache.rocketmq.proxy.service.BaseServiceTest;
+import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.metadata.MetadataService;
 import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.remoting.protocol.subscription.RetryPolicy;
@@ -90,16 +93,18 @@ public class DefaultReceiptHandleManagerTest extends BaseServiceTest {
         receiptHandleManager = new DefaultReceiptHandleManager(metadataService, consumerManager, new StateEventListener<RenewEvent>() {
             @Override
             public void fireEvent(RenewEvent event) {
-                MessageReceiptHandle messageReceiptHandle = event.getMessageReceiptHandle();
+                MessageReceiptHandle messageReceiptHandle = event.getMessageReceiptHandleList().get(0);
                 ReceiptHandle handle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
                 messagingProcessor.changeInvisibleTime(PROXY_CONTEXT, handle, messageReceiptHandle.getMessageId(),
-                        messageReceiptHandle.getGroup(), messageReceiptHandle.getTopic(), event.getRenewTime())
+                        messageReceiptHandle.getGroup(), messageReceiptHandle.getTopic(), event.getRenewTimeList().get(0))
                     .whenComplete((v, t) -> {
                         if (t != null) {
                             event.getFuture().completeExceptionally(t);
                             return;
                         }
-                        event.getFuture().complete(v);
+                        event.getFuture().complete(Collections.singletonList(
+                            new BatchChangeInvisibleTimeResult(
+                                new ReceiptHandleMessage(handle, messageReceiptHandle.getMessageId()), v)));
                     });
             }
         });

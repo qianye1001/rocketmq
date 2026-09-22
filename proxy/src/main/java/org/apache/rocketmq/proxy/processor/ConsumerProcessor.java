@@ -46,9 +46,11 @@ import org.apache.rocketmq.common.utils.ExceptionUtils;
 import org.apache.rocketmq.common.utils.FutureUtils;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
+import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
+import org.apache.rocketmq.proxy.common.utils.BatchChangeInvisibleTimeUtils;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.config.ProxyConfig;
@@ -248,27 +250,30 @@ public class ConsumerProcessor extends AbstractProcessor {
                     messageExtList.add(messageExt);
                 }
             }
-            if (toReturnMessageList.size() == 1) {
-                ReceiptHandleMessage handleMessage = toReturnMessageList.get(0);
-                this.messagingProcessor.changeInvisibleTime(
-                    ctx,
-                    handleMessage.getReceiptHandle(),
-                    handleMessage.getMessageId(),
-                    consumerGroup,
-                    topic,
-                    MessagingProcessor.INVISIBLE_TIME_MS,
-                    handleMessage.getLiteTopic(),
-                    MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-                    true);
-            } else if (!toReturnMessageList.isEmpty()) {
-                this.messagingProcessor.batchChangeInvisibleTime(
-                    ctx,
-                    toReturnMessageList,
-                    consumerGroup,
-                    topic,
-                    MessagingProcessor.INVISIBLE_TIME_MS,
-                    MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-                    true);
+            for (List<ReceiptHandleMessage> batch : BatchChangeInvisibleTimeUtils.groupByBroker(
+                toReturnMessageList, consumerGroup, topic)) {
+                if (batch.size() == 1) {
+                    ReceiptHandleMessage handleMessage = batch.get(0);
+                    this.messagingProcessor.changeInvisibleTime(
+                        ctx,
+                        handleMessage.getReceiptHandle(),
+                        handleMessage.getMessageId(),
+                        consumerGroup,
+                        topic,
+                        MessagingProcessor.INVISIBLE_TIME_MS,
+                        handleMessage.getLiteTopic(),
+                        MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
+                        true);
+                } else {
+                    this.messagingProcessor.batchChangeInvisibleTime(
+                        ctx,
+                        batch,
+                        consumerGroup,
+                        topic,
+                        MessagingProcessor.INVISIBLE_TIME_MS,
+                        MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
+                        true);
+                }
             }
             popResult.setMsgFoundList(messageExtList);
         }
@@ -393,54 +398,38 @@ public class ConsumerProcessor extends AbstractProcessor {
     ) {
         CompletableFuture<List<BatchChangeInvisibleTimeResult>> future = new CompletableFuture<>();
         try {
+            BatchChangeInvisibleTimeUtils.validateBatch(handleMessageList, consumerGroup, topic);
             BatchChangeInvisibleTimeResult[] batchResults = new BatchChangeInvisibleTimeResult[handleMessageList.size()];
-            Map<String, List<Integer>> brokerHandleIndexMap = new HashMap<>();
-
+            List<ReceiptHandleMessage> validHandles = new ArrayList<>();
             for (int i = 0; i < handleMessageList.size(); i++) {
                 ReceiptHandleMessage handleMessage = handleMessageList.get(i);
                 if (handleMessage.getReceiptHandle().isExpired()) {
                     batchResults[i] = new BatchChangeInvisibleTimeResult(handleMessage, EXPIRED_HANDLE_PROXY_EXCEPTION);
-                    continue;
+                } else {
+                    validHandles.add(handleMessage);
                 }
-                ReceiptHandle handle = handleMessage.getReceiptHandle();
-                String realTopic = handle.getRealTopic(topic, consumerGroup);
-                String batchKey = handle.getBrokerName() + "@" + realTopic;
-                brokerHandleIndexMap.computeIfAbsent(batchKey, key -> new ArrayList<>()).add(i);
             }
-
-            if (brokerHandleIndexMap.isEmpty()) {
-                return FutureUtils.addExecutor(CompletableFuture.completedFuture(
-                    buildBatchChangeInvisibleTimeResultList(handleMessageList, batchResults)), this.executor);
-            }
-
-            List<CompletableFuture<Void>> futures = new ArrayList<>(brokerHandleIndexMap.size());
-            for (List<Integer> brokerHandleIndexes : brokerHandleIndexMap.values()) {
-                List<ReceiptHandleMessage> brokerHandleList = new ArrayList<>(brokerHandleIndexes.size());
-                for (Integer index : brokerHandleIndexes) {
-                    brokerHandleList.add(handleMessageList.get(index));
-                }
-                futures.add(processBrokerChangeInvisibleTime(
-                    ctx, consumerGroup, topic, brokerHandleList, invisibleTime, timeoutMillis, suspend)
-                    .thenAccept(results -> {
-                        for (int i = 0; i < brokerHandleIndexes.size(); i++) {
-                            int index = brokerHandleIndexes.get(i);
-                            if (results == null || i >= results.size()) {
-                                batchResults[index] = new BatchChangeInvisibleTimeResult(handleMessageList.get(index),
-                                    new ProxyException(ProxyExceptionCode.INTERNAL_SERVER_ERROR,
-                                        "batch change invisible time result missing"));
-                            } else {
-                                batchResults[index] = results.get(i);
+            if (validHandles.isEmpty()) {
+                future.complete(buildBatchChangeInvisibleTimeResultList(handleMessageList, batchResults));
+            } else {
+                processBrokerChangeInvisibleTime(ctx, consumerGroup, topic, validHandles, invisibleTime, timeoutMillis, suspend)
+                    .whenComplete((results, throwable) -> {
+                        if (throwable != null) {
+                            future.completeExceptionally(throwable);
+                            return;
+                        }
+                        int resultIndex = 0;
+                        for (int i = 0; i < batchResults.length; i++) {
+                            if (batchResults[i] == null) {
+                                if (results != null && resultIndex < results.size()) {
+                                    batchResults[i] = results.get(resultIndex);
+                                }
+                                resultIndex++;
                             }
                         }
-                    }));
+                        future.complete(buildBatchChangeInvisibleTimeResultList(handleMessageList, batchResults));
+                    });
             }
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).whenComplete((val, throwable) -> {
-                if (throwable != null) {
-                    future.completeExceptionally(throwable);
-                    return;
-                }
-                future.complete(buildBatchChangeInvisibleTimeResultList(handleMessageList, batchResults));
-            });
         } catch (Throwable t) {
             future.completeExceptionally(t);
         }

@@ -19,7 +19,6 @@ package org.apache.rocketmq.proxy.processor;
 import com.google.common.util.concurrent.MoreExecutors;
 import io.netty.channel.local.LocalChannel;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -34,6 +33,7 @@ import org.apache.rocketmq.proxy.common.ReceiptHandleGroupKey;
 import org.apache.rocketmq.proxy.common.RenewEvent;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
+import org.apache.rocketmq.proxy.service.receipt.DefaultReceiptHandleManager;
 import org.apache.rocketmq.remoting.protocol.header.ExtraInfoUtil;
 import org.junit.After;
 import org.junit.Before;
@@ -52,6 +52,8 @@ import static org.mockito.Mockito.doAnswer;
 public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
     private final List<List<ReceiptHandleMessage>> requests = new ArrayList<>();
     private final List<CompletableFuture<List<AckResult>>> responses = new ArrayList<>();
+    private final List<RenewEvent> events = new ArrayList<>();
+    private TestReceiptHandleManager manager;
     private ExecutorService executor;
     private ReceiptHandleProcessor receiptProcessor;
 
@@ -61,6 +63,12 @@ public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
         executor = MoreExecutors.newDirectExecutorService();
         ConsumerProcessor consumerProcessor = new ConsumerProcessor(messagingProcessor, serviceManager, executor);
         receiptProcessor = new ReceiptHandleProcessor(messagingProcessor, serviceManager);
+        manager = new TestReceiptHandleManager();
+        doAnswer(invocation -> consumerProcessor.changeInvisibleTime(
+            invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2),
+            invocation.getArgument(3), invocation.getArgument(4), invocation.getArgument(5), invocation.getArgument(6),
+            MessagingProcessor.DEFAULT_TIMEOUT_MILLS, false))
+            .when(messagingProcessor).changeInvisibleTime(any(), any(), anyString(), anyString(), anyString(), anyLong(), any());
         doAnswer(invocation -> consumerProcessor.batchChangeInvisibleTime(
             invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2),
             invocation.getArgument(3), invocation.getArgument(4), invocation.getArgument(5), invocation.getArgument(6)))
@@ -78,6 +86,7 @@ public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
     @After
     public void after() {
         try {
+            manager.shutdown();
             receiptProcessor.shutdown();
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -89,58 +98,71 @@ public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
 
     @Test
     public void testFastBrokerReleasesHandlesBeforeSlowBrokerCompletes() {
-        RenewEvent event = event(
-            message("fast", ReceiptHandle.NORMAL_TOPIC, 0), message("slow", ReceiptHandle.NORMAL_TOPIC, 1),
-            message("fast", ReceiptHandle.NORMAL_TOPIC, 2), message("slow", ReceiptHandle.NORMAL_TOPIC, 3));
-        ReceiptHandleGroup group = new ReceiptHandleGroup();
-        for (int i = 0; i < event.getMessageReceiptHandleList().size(); i++) {
-            MessageReceiptHandle message = event.getMessageReceiptHandleList().get(i);
-            CompletableFuture<AckResult> ackFuture = event.getFutureList().get(i);
-            group.put(message.getMessageId(), message);
-            group.computeIfPresent(message.getMessageId(), message.getOriginalReceiptHandleStr(), current ->
-                ackFuture.thenApply(result -> {
-                    current.updateReceiptHandle(result.getExtraInfo());
-                    return current;
-                }));
-        }
-
-        receiptProcessor.batchChangeInvisibleTime(createContext(), event);
+        MessageReceiptHandle fast = message("fast", ReceiptHandle.NORMAL_TOPIC, 0);
+        MessageReceiptHandle slow = message("slow", ReceiptHandle.NORMAL_TOPIC, 1);
+        manager.renew(fast, slow, message("fast", ReceiptHandle.NORMAL_TOPIC, 2),
+            message("slow", ReceiptHandle.NORMAL_TOPIC, 3));
         assertEquals(2, requests.size());
-        assertFalse(event.getFutureList().get(0).isDone());
-        assertFalse(event.getFutureList().get(1).isDone());
-        int fastRequest = requestIndex("fast", ReceiptHandle.NORMAL_TOPIC);
-        List<AckResult> fastResults = successResults(requests.get(fastRequest));
-        responses.get(fastRequest).complete(fastResults);
-
-        assertTrue(event.getFutureList().get(0).isDone());
-        assertTrue(event.getFutureList().get(2).isDone());
-        assertFalse(event.getFutureList().get(1).isDone());
-        assertFalse(event.getFutureList().get(3).isDone());
-        MessageReceiptHandle fastMessage = event.getMessageReceiptHandleList().get(0);
-        MessageReceiptHandle removed = group.remove(fastMessage.getMessageId(), fastMessage.getOriginalReceiptHandleStr());
-        assertEquals(fastResults.get(0).getExtraInfo() + MessageConst.KEY_SEPARATOR + 100, removed.getReceiptHandleStr());
+        completeSuccess(requestIndex("fast", ReceiptHandle.NORMAL_TOPIC));
+        assertEquals(1, fast.getRenewTimes());
+        assertEquals(0, slow.getRenewTimes());
+        assertTrue(events.get(0).getFuture().isDone());
+        assertFalse(events.get(1).getFuture().isDone());
+        MessageReceiptHandle removed = manager.group.remove(fast.getMessageId(), fast.getOriginalReceiptHandleStr());
+        assertEquals(fast.getReceiptHandleStr(), removed.getReceiptHandleStr());
+        assertFalse(fast.getOriginalReceiptHandleStr().equals(removed.getReceiptHandleStr()));
         completeSuccess(requestIndex("slow", ReceiptHandle.NORMAL_TOPIC));
+        assertEquals(1, slow.getRenewTimes());
     }
 
     @Test
     public void testCompletedChunkReleasesHandlesBeforeNextChunkCompletes() {
         ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
-        RenewEvent event = event(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
-            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), message("broker", ReceiptHandle.NORMAL_TOPIC, 2),
-            message("broker", ReceiptHandle.NORMAL_TOPIC, 3));
-        receiptProcessor.batchChangeInvisibleTime(createContext(), event);
+        MessageReceiptHandle first = message("broker", ReceiptHandle.NORMAL_TOPIC, 0);
+        MessageReceiptHandle last = message("broker", ReceiptHandle.NORMAL_TOPIC, 3);
+        manager.renew(first, message("broker", ReceiptHandle.NORMAL_TOPIC, 1),
+            message("broker", ReceiptHandle.NORMAL_TOPIC, 2), last);
         assertEquals(1, requests.size());
-        assertFalse(event.getFutureList().get(0).isDone());
         completeSuccess(0);
         assertEquals(2, requests.size());
-        assertTrue(event.getFutureList().get(0).isDone());
-        assertTrue(event.getFutureList().get(1).isDone());
-        assertFalse(event.getFutureList().get(2).isDone());
-        assertFalse(event.getFutureList().get(3).isDone());
-        assertEquals(30002L, requests.get(1).get(0).getInvisibleTime());
+        assertEquals(1, first.getRenewTimes());
+        assertEquals(0, last.getRenewTimes());
+        assertTrue(events.get(0).getFuture().isDone());
+        assertFalse(events.get(1).getFuture().isDone());
+        assertEquals(first, manager.group.remove(first.getMessageId(), first.getOriginalReceiptHandleStr()));
         completeSuccess(1);
-        assertTrue(event.getFutureList().get(2).isDone());
-        assertTrue(event.getFutureList().get(3).isDone());
+        assertEquals(1, last.getRenewTimes());
+    }
+
+    @Test
+    public void testQueuedChunkDoesNotLockHandlesBeforeSubmission() {
+        ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
+        MessageReceiptHandle last = message("broker", ReceiptHandle.NORMAL_TOPIC, 2);
+        manager.renew(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
+            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), last);
+        assertEquals(last, manager.group.remove(last.getMessageId(), last.getOriginalReceiptHandleStr()));
+        completeSuccess(0);
+        assertEquals(1, requests.size());
+        assertEquals(1, events.size());
+    }
+
+    @Test
+    public void testQueuedChunkSkipsHandlesAlreadyRenewed() {
+        ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
+        MessageReceiptHandle last = message("broker", ReceiptHandle.NORMAL_TOPIC, 2);
+        manager.renew(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
+            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), last);
+        String renewed = ReceiptHandle.builder().startOffset(0).retrieveTime(System.currentTimeMillis())
+            .invisibleTime(60000).reviveQueueId(1).topicType(ReceiptHandle.NORMAL_TOPIC).brokerName("broker")
+            .queueId(0).offset(2).commitLogOffset(102).build().encode();
+        manager.group.computeIfPresent(last.getMessageId(), last.getOriginalReceiptHandleStr(), current -> {
+            current.updateReceiptHandle(renewed);
+            return CompletableFuture.completedFuture(current);
+        });
+        completeSuccess(0);
+        assertEquals(1, requests.size());
+        assertEquals(1, events.size());
+        assertEquals(renewed, manager.group.remove(last.getMessageId(), last.getOriginalReceiptHandleStr()).getReceiptHandleStr());
     }
 
     @Test
@@ -149,83 +171,116 @@ public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
         CompletableFuture<AckResult> lastResponse = new CompletableFuture<>();
         doAnswer(invocation -> lastResponse).when(messageService).changeInvisibleTime(
             any(), any(), anyString(), any(), anyLong());
-        RenewEvent event = event(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
-            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), message("broker", ReceiptHandle.NORMAL_TOPIC, 2));
-        receiptProcessor.batchChangeInvisibleTime(createContext(), event);
+        MessageReceiptHandle last = message("broker", ReceiptHandle.NORMAL_TOPIC, 2);
+        manager.renew(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
+            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), last);
         completeSuccess(0);
-        assertTrue(event.getFutureList().get(0).isDone());
-        assertTrue(event.getFutureList().get(1).isDone());
-        assertFalse(event.getFutureList().get(2).isDone());
+        assertEquals(2, events.size());
+        assertTrue(events.get(0).getFuture().isDone());
+        assertFalse(events.get(1).getFuture().isDone());
         AckResult result = new AckResult();
         result.setStatus(AckStatus.OK);
+        result.setExtraInfo(last.getReceiptHandleStr().substring(0, last.getReceiptHandleStr().lastIndexOf(MessageConst.KEY_SEPARATOR)));
         lastResponse.complete(result);
-        assertEquals(AckStatus.OK, event.getFutureList().get(2).join().getStatus());
+        assertEquals(1, last.getRenewTimes());
     }
 
     @Test
     public void testRetryTopicCompletesIndependentlyOnSameBroker() {
-        RenewEvent event = event(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
-            message("broker", ReceiptHandle.RETRY_TOPIC_V2, 1), message("broker", ReceiptHandle.NORMAL_TOPIC, 2),
+        MessageReceiptHandle normal = message("broker", ReceiptHandle.NORMAL_TOPIC, 0);
+        MessageReceiptHandle retry = message("broker", ReceiptHandle.RETRY_TOPIC_V2, 1);
+        manager.renew(normal, retry, message("broker", ReceiptHandle.NORMAL_TOPIC, 2),
             message("broker", ReceiptHandle.RETRY_TOPIC_V2, 3));
-        receiptProcessor.batchChangeInvisibleTime(createContext(), event);
         assertEquals(2, requests.size());
         completeSuccess(requestIndex("broker", ReceiptHandle.RETRY_TOPIC_V2));
-        assertTrue(event.getFutureList().get(1).isDone());
-        assertTrue(event.getFutureList().get(3).isDone());
-        assertFalse(event.getFutureList().get(0).isDone());
-        assertFalse(event.getFutureList().get(2).isDone());
+        assertEquals(1, retry.getRenewTimes());
+        assertEquals(0, normal.getRenewTimes());
         completeSuccess(requestIndex("broker", ReceiptHandle.NORMAL_TOPIC));
     }
 
     @Test
     public void testFailedChunkDoesNotPreventLaterChunkCompletion() {
         ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
-        RenewEvent event = event(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
-            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), message("broker", ReceiptHandle.NORMAL_TOPIC, 2),
-            message("broker", ReceiptHandle.NORMAL_TOPIC, 3));
-        receiptProcessor.batchChangeInvisibleTime(createContext(), event);
+        MessageReceiptHandle first = message("broker", ReceiptHandle.NORMAL_TOPIC, 0);
+        MessageReceiptHandle last = message("broker", ReceiptHandle.NORMAL_TOPIC, 3);
+        manager.renew(first, message("broker", ReceiptHandle.NORMAL_TOPIC, 1),
+            message("broker", ReceiptHandle.NORMAL_TOPIC, 2), last);
         responses.get(0).completeExceptionally(new TimeoutException("broker response lost"));
         assertEquals(2, requests.size());
-        assertTrue(event.getFutureList().get(0).isCompletedExceptionally());
-        assertTrue(event.getFutureList().get(1).isCompletedExceptionally());
-        assertFalse(event.getFutureList().get(2).isDone());
+        assertEquals(1, first.getRenewRetryTimes());
+        assertEquals(first, manager.group.remove(first.getMessageId(), first.getOriginalReceiptHandleStr()));
         completeSuccess(1);
-        assertEquals(AckStatus.OK, event.getFutureList().get(2).join().getStatus());
-        assertEquals(AckStatus.OK, event.getFutureList().get(3).join().getStatus());
-        assertEquals(2, requests.size());
+        assertEquals(1, last.getRenewTimes());
     }
 
     @Test
-    public void testSynchronousSubmissionFailureDoesNotLeaveLaterChunksPending() {
+    public void testSynchronousSubmissionFailureReleasesAllChunks() {
         ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
         doAnswer(invocation -> {
             throw new IllegalStateException("request could not be submitted");
         }).when(messagingProcessor).batchChangeInvisibleTime(
             any(), anyList(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-        RenewEvent event = event(message("broker", ReceiptHandle.NORMAL_TOPIC, 0),
-            message("broker", ReceiptHandle.NORMAL_TOPIC, 1), message("broker", ReceiptHandle.NORMAL_TOPIC, 2));
-        receiptProcessor.batchChangeInvisibleTime(createContext(), event);
-        for (CompletableFuture<AckResult> future : event.getFutureList()) {
-            assertTrue(future.isCompletedExceptionally());
+        MessageReceiptHandle first = message("broker", ReceiptHandle.NORMAL_TOPIC, 0);
+        MessageReceiptHandle last = message("broker", ReceiptHandle.NORMAL_TOPIC, 3);
+        manager.renew(first, message("broker", ReceiptHandle.NORMAL_TOPIC, 1),
+            message("broker", ReceiptHandle.NORMAL_TOPIC, 2), last);
+        assertEquals(2, events.size());
+        assertTrue(events.get(0).getFuture().isCompletedExceptionally());
+        assertTrue(events.get(1).getFuture().isCompletedExceptionally());
+        assertEquals(1, first.getRenewRetryTimes());
+        assertEquals(1, last.getRenewRetryTimes());
+        assertEquals(first, manager.group.remove(first.getMessageId(), first.getOriginalReceiptHandleStr()));
+        assertEquals(last, manager.group.remove(last.getMessageId(), last.getOriginalReceiptHandleStr()));
+    }
+
+    @Test
+    public void testClearGroupBatchesByBrokerAndRealTopic() {
+        manager.clear(message("fast", ReceiptHandle.NORMAL_TOPIC, 0), message("slow", ReceiptHandle.NORMAL_TOPIC, 1),
+            message("fast", ReceiptHandle.NORMAL_TOPIC, 2), message("slow", ReceiptHandle.NORMAL_TOPIC, 3),
+            message("fast", ReceiptHandle.RETRY_TOPIC_V2, 4), message("fast", ReceiptHandle.RETRY_TOPIC_V2, 5));
+        assertEquals(3, requests.size());
+        completeSuccess(requestIndex("fast", ReceiptHandle.NORMAL_TOPIC));
+        assertEquals(1, events.stream().filter(event -> event.getFuture().isDone()).count());
+        completeSuccess(requestIndex("fast", ReceiptHandle.RETRY_TOPIC_V2));
+        completeSuccess(requestIndex("slow", ReceiptHandle.NORMAL_TOPIC));
+        assertTrue(manager.group.isEmpty());
+    }
+
+    private class TestReceiptHandleManager extends DefaultReceiptHandleManager {
+        private final ReceiptHandleGroup group = new ReceiptHandleGroup();
+        private final ReceiptHandleGroupKey key = new ReceiptHandleGroupKey(new LocalChannel(), "group");
+
+        TestReceiptHandleManager() {
+            super(ReceiptHandleBatchCompletionTest.this.metadataService, ReceiptHandleBatchCompletionTest.this.consumerManager,
+                event -> {
+                    events.add(event);
+                    receiptProcessor.changeInvisibleTime(ReceiptHandleBatchCompletionTest.createContext(), event);
+                });
+        }
+
+        void renew(MessageReceiptHandle... messages) {
+            List<RenewMessage> renewMessages = new ArrayList<>();
+            for (MessageReceiptHandle message : messages) {
+                group.put(message.getMessageId(), message);
+                renewMessages.add(new RenewMessage(message.getMessageId(), message.getOriginalReceiptHandleStr(), message));
+            }
+            renewMessageBatch(createContext("test"), key, group, renewMessages);
+        }
+
+        void clear(MessageReceiptHandle... messages) {
+            for (MessageReceiptHandle message : messages) {
+                group.put(message.getMessageId(), message);
+            }
+            fireClearGroupEventBatch(key, group, ConfigurationManager.getProxyConfig());
         }
     }
 
     private MessageReceiptHandle message(String broker, String topicType, int index) {
-        String handle = ReceiptHandle.builder().startOffset(0).retrieveTime(System.currentTimeMillis())
+        String handle = ReceiptHandle.builder().startOffset(0).retrieveTime(System.currentTimeMillis() - 60000
+            + ConfigurationManager.getProxyConfig().getRenewAheadTimeMillis() - 5)
             .invisibleTime(60000).reviveQueueId(1).topicType(topicType).brokerName(broker)
             .queueId(0).offset(index).commitLogOffset(100 + index).build().encode();
         return new MessageReceiptHandle("group", "topic", 0, handle, "msg-" + index, index, 0);
-    }
-
-    private RenewEvent event(MessageReceiptHandle... messages) {
-        List<Long> times = new ArrayList<>();
-        List<CompletableFuture<AckResult>> futures = new ArrayList<>();
-        for (int i = 0; i < messages.length; i++) {
-            times.add(30000L + i);
-            futures.add(new CompletableFuture<>());
-        }
-        return new RenewEvent(new ReceiptHandleGroupKey(new LocalChannel(), "group"), Arrays.asList(messages),
-            times, RenewEvent.EventType.RENEW, futures);
     }
 
     private int requestIndex(String broker, String topicType) {

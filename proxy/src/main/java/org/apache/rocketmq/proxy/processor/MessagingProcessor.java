@@ -36,6 +36,7 @@ import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.common.utils.StartAndShutdown;
 import org.apache.rocketmq.proxy.common.Address;
+import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
@@ -221,9 +222,9 @@ public interface MessagingProcessor extends StartAndShutdown {
     );
 
     /**
-     * Change invisible time for handles grouped by broker.
+     * Change invisible time for one broker and real topic. Results preserve input order.
      *
-     * @param handleMessageList non-empty handles from the same broker
+     * @param handleMessageList non-empty handles from the same broker and real topic
      * @param suspend whether the new checkpoint should be marked suspended
      */
     default CompletableFuture<List<BatchChangeInvisibleTimeResult>> batchChangeInvisibleTime(
@@ -238,9 +239,9 @@ public interface MessagingProcessor extends StartAndShutdown {
     }
 
     /**
-     * Change invisible time for handles grouped by broker.
+     * Change invisible time for one broker and real topic. Results preserve input order.
      *
-     * @param handleMessageList non-empty handles from the same broker
+     * @param handleMessageList non-empty handles from the same broker and real topic
      * @param suspend whether the new checkpoint should be marked suspended
      */
     CompletableFuture<List<BatchChangeInvisibleTimeResult>> batchChangeInvisibleTime(

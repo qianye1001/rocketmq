@@ -28,21 +28,24 @@ import io.grpc.stub.StreamObserver;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.rocketmq.client.consumer.AckResult;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PopStatus;
+import org.apache.rocketmq.common.KeyBuilder;
 import org.apache.rocketmq.common.message.MessageAccessor;
 import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
+import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.grpc.v2.BaseActivityTest;
-import org.apache.rocketmq.proxy.processor.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.remoting.protocol.header.ExtraInfoUtil;
 import org.junit.Before;
@@ -311,6 +314,45 @@ public class ReceiveMessageResponseStreamWriterTest extends BaseActivityTest {
             ((ReceiptHandleMessage) handleMessageListCaptor.getValue().get(0)).getMessageId());
         assertEquals(messageExtList.get(2).getMsgId(),
             ((ReceiptHandleMessage) handleMessageListCaptor.getValue().get(1)).getMessageId());
+    }
+
+    @Test
+    public void testNackGroupsByBrokerAndRealTopic() {
+        ConfigurationManager.getProxyConfig().setEnableBatchChangeInvisibleTime(true);
+        ArgumentCaptor<List> batches = ArgumentCaptor.forClass(List.class);
+        doReturn(new CompletableFuture<List<BatchChangeInvisibleTimeResult>>())
+            .when(messagingProcessor).batchChangeInvisibleTime(any(), batches.capture(),
+                anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
+        doReturn(CompletableFuture.completedFuture(new AckResult()))
+            .when(messagingProcessor).changeInvisibleTime(any(), any(), anyString(), anyString(), anyString(),
+                anyLong(), any(), anyLong(), anyBoolean());
+        List<MessageExt> messages = new ArrayList<>();
+        String retryTopic = KeyBuilder.buildPopRetryTopic(TOPIC, CONSUMER_GROUP, true);
+        for (int i = 0; i < 5; i++) {
+            String topic = i % 2 == 0 ? TOPIC : retryTopic;
+            MessageExt message = createMessageExt(topic, "tag");
+            MessageAccessor.putProperty(message, MessageConst.PROPERTY_POP_CK,
+                ExtraInfoUtil.buildExtraInfo(0, System.currentTimeMillis(), 60000, 1, topic,
+                    i == 4 ? "slow" : "fast", 0, i));
+            messages.add(message);
+        }
+        writer.processThrowableWhenWriteMessages(new RuntimeException("cancelled"), ProxyContext.create(),
+            createReceiveMessageRequest(), messages);
+        assertEquals(2, batches.getAllValues().size());
+        Set<String> realTopics = new HashSet<>();
+        for (List<ReceiptHandleMessage> batch : batches.getAllValues()) {
+            assertEquals(2, batch.size());
+            String realTopic = batch.get(0).getReceiptHandle().getRealTopic(TOPIC, CONSUMER_GROUP);
+            realTopics.add(realTopic);
+            for (ReceiptHandleMessage handle : batch) {
+                assertEquals("fast", handle.getReceiptHandle().getBrokerName());
+                assertEquals(realTopic, handle.getReceiptHandle().getRealTopic(TOPIC, CONSUMER_GROUP));
+            }
+        }
+        assertEquals(2, realTopics.size());
+        verify(messagingProcessor).changeInvisibleTime(any(), any(), eq(messages.get(4).getMsgId()),
+            eq(CONSUMER_GROUP), eq(TOPIC), eq(ReceiveMessageResponseStreamWriter.NACK_INVISIBLE_TIME), eq(null),
+            eq(org.apache.rocketmq.proxy.processor.MessagingProcessor.DEFAULT_TIMEOUT_MILLS), eq(true));
     }
 
     private static ReceiveMessageRequest createReceiveMessageRequest() {

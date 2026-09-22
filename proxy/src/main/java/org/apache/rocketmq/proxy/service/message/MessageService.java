@@ -109,9 +109,9 @@ public interface MessageService {
     );
 
     /**
-     * Change invisible time for handles that have already been grouped by broker.
+     * Change invisible time for one broker and real topic. Results preserve input order.
      *
-     * @param handleList non-empty handles from the same broker
+     * @param handleList non-empty handles from the same broker and real topic
      * @param suspend whether the new checkpoint should be marked suspended
      */
     CompletableFuture<List<AckResult>> batchChangeInvisibleTime(

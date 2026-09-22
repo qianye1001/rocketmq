@@ -20,6 +20,7 @@ package org.apache.rocketmq.proxy.processor;
 import com.google.common.collect.Sets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 import org.apache.rocketmq.client.consumer.AckResult;
@@ -44,11 +46,12 @@ import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.common.utils.FutureUtils;
+import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
-import org.apache.rocketmq.common.utils.FutureUtils;
-import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
+import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
 import org.apache.rocketmq.proxy.service.route.MessageQueueView;
@@ -70,6 +73,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -288,32 +292,31 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
 
     @Test
     public void testBatchChangeInvisibleTime() throws Throwable {
-        String brokerName1 = "brokerName1";
-        String brokerName2 = "brokerName2";
+        String brokerName = "brokerName";
         MessageExt expireMessage = createMessageExt(TOPIC, "", 0, 3000, System.currentTimeMillis() - 10000,
-            0, 0, 0, 0, brokerName1);
+            0, 0, 0, 0, brokerName);
         ReceiptHandle expireHandle = create(expireMessage);
 
         List<ReceiptHandleMessage> receiptHandleMessageList = new ArrayList<>();
         receiptHandleMessageList.add(new ReceiptHandleMessage(expireHandle, expireMessage.getMsgId()));
-        List<String> broker1Msg = new ArrayList<>();
-        List<String> broker2Msg = new ArrayList<>();
+        List<String> successfulMessages = new ArrayList<>();
+        List<String> missingMessages = new ArrayList<>();
 
         long now = System.currentTimeMillis();
         int msgNum = 3;
         for (int i = 0; i < msgNum; i++) {
             MessageExt brokerMessage = createMessageExt(TOPIC, "", 0, 3000, now,
-                0, 0, 0, i + 1, brokerName1);
+                0, 0, 0, i + 1, brokerName);
             ReceiptHandle brokerHandle = create(brokerMessage);
             receiptHandleMessageList.add(new ReceiptHandleMessage(brokerHandle, brokerMessage.getMsgId()));
-            broker1Msg.add(brokerMessage.getMsgId());
+            successfulMessages.add(brokerMessage.getMsgId());
         }
         for (int i = 0; i < msgNum; i++) {
             MessageExt brokerMessage = createMessageExt(TOPIC, "", 0, 3000, now,
-                0, 0, 0, i + 1, brokerName2);
+                0, 0, 0, i + 1, brokerName);
             ReceiptHandle brokerHandle = create(brokerMessage);
             receiptHandleMessageList.add(new ReceiptHandleMessage(brokerHandle, brokerMessage.getMsgId()));
-            broker2Msg.add(brokerMessage.getMsgId());
+            missingMessages.add(brokerMessage.getMsgId());
         }
 
         String newExtraInfo = "newExtraInfo";
@@ -321,10 +324,9 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
         doAnswer((Answer<CompletableFuture<List<AckResult>>>) invocation -> {
             List<ReceiptHandleMessage> handleMessageList = invocation.getArgument(1, List.class);
             List<AckResult> ackResultList = new ArrayList<>();
-            String brokerName = handleMessageList.get(0).getReceiptHandle().getBrokerName();
-            for (ReceiptHandleMessage ignored : handleMessageList) {
+            for (ReceiptHandleMessage handleMessage : handleMessageList) {
                 AckResult ackResult = new AckResult();
-                if (brokerName.equals(brokerName1)) {
+                if (successfulMessages.contains(handleMessage.getMessageId())) {
                     ackResult.setStatus(AckStatus.OK);
                     ackResult.setPopTime(popTime);
                     ackResult.setExtraInfo(newExtraInfo);
@@ -345,7 +347,7 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
         for (BatchChangeInvisibleTimeResult result : resultList) {
             msgResult.put(result.getReceiptHandleMessage().getMessageId(), result);
         }
-        for (String msgId : broker1Msg) {
+        for (String msgId : successfulMessages) {
             BatchChangeInvisibleTimeResult result = msgResult.get(msgId);
             assertEquals(AckStatus.OK, result.getAckResult().getStatus());
             assertEquals(popTime, result.getAckResult().getPopTime());
@@ -354,7 +356,7 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
                 result.getAckResult().getExtraInfo());
             assertNull(result.getProxyException());
         }
-        for (String msgId : broker2Msg) {
+        for (String msgId : missingMessages) {
             assertEquals(AckStatus.NO_EXIST, msgResult.get(msgId).getAckResult().getStatus());
             assertNull(msgResult.get(msgId).getProxyException());
         }
@@ -365,30 +367,29 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
     }
 
     @Test
-    public void testBatchChangeInvisibleTimePreserveInputOrderWithExpiredAndInterleavedGroups() throws Throwable {
-        String brokerName1 = "brokerName1";
-        String brokerName2 = "brokerName2";
+    public void testBatchChangeInvisibleTimePreserveInputOrderWithExpiredHandles() throws Throwable {
+        String brokerName = "brokerName";
         long now = System.currentTimeMillis();
 
         List<ReceiptHandleMessage> receiptHandleMessageList = new ArrayList<>();
         MessageExt broker2Message1 = createMessageExt(TOPIC, "", 0, 3000, now,
-            0, 0, 0, 1, brokerName2);
+            0, 0, 0, 1, brokerName);
         receiptHandleMessageList.add(new ReceiptHandleMessage(create(broker2Message1), broker2Message1.getMsgId()));
 
         MessageExt expireMessage = createMessageExt(TOPIC, "", 0, 3000, now - 10000,
-            0, 0, 0, 2, brokerName1);
+            0, 0, 0, 2, brokerName);
         receiptHandleMessageList.add(new ReceiptHandleMessage(create(expireMessage), expireMessage.getMsgId()));
 
         MessageExt broker1Message1 = createMessageExt(TOPIC, "", 0, 3000, now,
-            0, 0, 0, 3, brokerName1);
+            0, 0, 0, 3, brokerName);
         receiptHandleMessageList.add(new ReceiptHandleMessage(create(broker1Message1), broker1Message1.getMsgId()));
 
         MessageExt broker2Message2 = createMessageExt(TOPIC, "", 0, 3000, now,
-            0, 0, 0, 4, brokerName2);
+            0, 0, 0, 4, brokerName);
         receiptHandleMessageList.add(new ReceiptHandleMessage(create(broker2Message2), broker2Message2.getMsgId()));
 
         MessageExt broker1Message2 = createMessageExt(TOPIC, "", 0, 3000, now,
-            0, 0, 0, 5, brokerName1);
+            0, 0, 0, 5, brokerName);
         receiptHandleMessageList.add(new ReceiptHandleMessage(create(broker1Message2), broker1Message2.getMsgId()));
 
         doAnswer((Answer<CompletableFuture<List<AckResult>>>) invocation -> {
@@ -423,51 +424,37 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
                 assertNull(result.getProxyException());
             }
         }
-        verify(this.messageService, times(2)).batchChangeInvisibleTime(
+        verify(this.messageService, times(1)).batchChangeInvisibleTime(
             any(), anyList(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
         verify(this.messageService, never()).changeInvisibleTime(any(), any(), anyString(), any(), anyLong());
     }
 
     @Test
-    public void testBatchChangeInvisibleTimeSplitByRealTopic() throws Throwable {
-        String brokerName = "brokerName1";
-        String retryTopic = KeyBuilder.buildPopRetryTopic(TOPIC, CONSUMER_GROUP,
-            new BrokerConfig().isEnableRetryTopicV2());
-        List<ReceiptHandleMessage> receiptHandleMessageList = new ArrayList<>();
+    public void testBatchChangeInvisibleTimeRejectsMixedRealTopics() throws Throwable {
+        assertMixedBatchRejected(TOPIC, "broker", KeyBuilder.buildPopRetryTopic(TOPIC, CONSUMER_GROUP,
+            new BrokerConfig().isEnableRetryTopicV2()), "broker");
+    }
+
+    @Test
+    public void testBatchChangeInvisibleTimeRejectsMixedBrokers() throws Throwable {
+        assertMixedBatchRejected(TOPIC, "broker1", TOPIC, "broker2");
+    }
+
+    private void assertMixedBatchRejected(String topic1, String broker1, String topic2, String broker2) throws Throwable {
         long now = System.currentTimeMillis();
-        for (int i = 0; i < 2; i++) {
-            MessageExt normalMessage = createMessageExt(TOPIC, "", 0, 3000, now,
-                0, 0, 0, i + 1, brokerName);
-            receiptHandleMessageList.add(new ReceiptHandleMessage(create(normalMessage), normalMessage.getMsgId()));
-
-            MessageExt retryMessage = createMessageExt(retryTopic, "", 0, 3000, now,
-                0, 0, 0, i + 10, brokerName);
-            receiptHandleMessageList.add(new ReceiptHandleMessage(create(retryMessage), retryMessage.getMsgId()));
+        MessageExt first = createMessageExt(topic1, "", 0, 60000, now, 0, 0, 0, 1, broker1);
+        MessageExt second = createMessageExt(topic2, "", 0, 60000, now, 0, 0, 0, 2, broker2);
+        List<ReceiptHandleMessage> handles = Arrays.asList(
+            new ReceiptHandleMessage(create(first), first.getMsgId()), new ReceiptHandleMessage(create(second), second.getMsgId()));
+        try {
+            consumerProcessor.batchChangeInvisibleTime(createContext(), handles, CONSUMER_GROUP, TOPIC, 3000, 3000, true).get();
+            fail("mixed batch should be rejected before sending requests");
+        } catch (ExecutionException e) {
+            assertTrue(e.getCause() instanceof IllegalArgumentException);
         }
-
-        ArgumentCaptor<List> batchHandleListCaptor = ArgumentCaptor.forClass(List.class);
-        doAnswer((Answer<CompletableFuture<List<AckResult>>>) invocation -> {
-            List<ReceiptHandleMessage> handleMessageList = invocation.getArgument(1, List.class);
-            List<AckResult> ackResultList = new ArrayList<>();
-            for (ReceiptHandleMessage ignored : handleMessageList) {
-                AckResult ackResult = new AckResult();
-                ackResult.setStatus(AckStatus.OK);
-                ackResultList.add(ackResult);
-            }
-            return CompletableFuture.completedFuture(ackResultList);
-        }).when(this.messageService).batchChangeInvisibleTime(
-            any(), batchHandleListCaptor.capture(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-
-        List<BatchChangeInvisibleTimeResult> resultList = this.consumerProcessor.batchChangeInvisibleTime(
-            createContext(), receiptHandleMessageList, CONSUMER_GROUP, TOPIC, 3000, 3000, true).get();
-
-        assertEquals(receiptHandleMessageList.size(), resultList.size());
-        verify(this.messageService, times(2)).batchChangeInvisibleTime(
+        verify(messageService, never()).batchChangeInvisibleTime(
             any(), anyList(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-        assertEquals(2, batchHandleListCaptor.getAllValues().size());
-        assertEquals(2, batchHandleListCaptor.getAllValues().get(0).size());
-        assertEquals(2, batchHandleListCaptor.getAllValues().get(1).size());
-        verify(this.messageService, never()).changeInvisibleTime(any(), any(), anyString(), any(), anyLong());
+        verify(messageService, never()).changeInvisibleTime(any(), any(), anyString(), any(), anyLong());
     }
 
     @Test
@@ -842,6 +829,45 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
             ((ReceiptHandleMessage) handleMessageListCaptor.getValue().get(1)).getMessageId());
         assertEquals(PopStatus.FOUND, popResult.getPopStatus());
         assertEquals(0, popResult.getMsgFoundList().size());
+    }
+
+    @Test
+    public void testToReturnFilterGroupsByBrokerAndRealTopic() throws Throwable {
+        ConfigurationManager.getProxyConfig().setEnableBatchChangeInvisibleTime(true);
+        String retryTopic = KeyBuilder.buildPopRetryTopic(TOPIC, CONSUMER_GROUP, true);
+        List<MessageExt> messages = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < 2; i++) {
+            messages.add(createMessageExt(TOPIC, "tag", 0, 60000, now, 0, 0, 0, i, "fast"));
+            messages.add(createMessageExt(retryTopic, "tag", 0, 60000, now, 0, 0, 0, i, "fast"));
+        }
+        messages.add(createMessageExt(TOPIC, "tag", 0, 60000, now, 0, 0, 0, 2, "slow"));
+        when(messageService.popMessage(any(), any(), any(), anyLong()))
+            .thenReturn(CompletableFuture.completedFuture(new PopResult(PopStatus.FOUND, messages)));
+        when(topicRouteService.getCurrentMessageQueueView(any(), anyString())).thenReturn(mock(MessageQueueView.class));
+        ArgumentCaptor<List> batches = ArgumentCaptor.forClass(List.class);
+        when(messagingProcessor.batchChangeInvisibleTime(any(), batches.capture(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean()))
+            .thenReturn(new CompletableFuture<>());
+        AddressableMessageQueue queue = mock(AddressableMessageQueue.class);
+        PopResult result = consumerProcessor.popMessage(createContext(), (ctx, view) -> queue, CONSUMER_GROUP, TOPIC,
+            60, 60000, 3000, ConsumeInitMode.MAX, FilterAPI.build(TOPIC, "tag", ExpressionType.TAG), false,
+            (ctx, group, subscription, message) -> PopMessageResultFilter.FilterResult.TO_RETURN, null, 3000).get();
+        assertEquals(0, result.getMsgFoundList().size());
+        assertEquals(2, batches.getAllValues().size());
+        Set<String> realTopics = new HashSet<>();
+        for (List<ReceiptHandleMessage> batch : batches.getAllValues()) {
+            assertEquals(2, batch.size());
+            String realTopic = batch.get(0).getReceiptHandle().getRealTopic(TOPIC, CONSUMER_GROUP);
+            realTopics.add(realTopic);
+            for (ReceiptHandleMessage handle : batch) {
+                assertEquals("fast", handle.getReceiptHandle().getBrokerName());
+                assertEquals(realTopic, handle.getReceiptHandle().getRealTopic(TOPIC, CONSUMER_GROUP));
+            }
+        }
+        assertEquals(2, realTopics.size());
+        verify(messagingProcessor).changeInvisibleTime(any(), any(), eq(messages.get(4).getMsgId()),
+            eq(CONSUMER_GROUP), eq(TOPIC), eq(MessagingProcessor.INVISIBLE_TIME_MS), eq(null),
+            eq(MessagingProcessor.DEFAULT_TIMEOUT_MILLS), eq(true));
     }
 
     @Test

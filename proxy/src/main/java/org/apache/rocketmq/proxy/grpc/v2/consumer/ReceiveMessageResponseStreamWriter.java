@@ -35,6 +35,7 @@ import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.proxy.common.ProxyContext;
+import org.apache.rocketmq.proxy.common.utils.BatchChangeInvisibleTimeUtils;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.grpc.v2.common.GrpcConverter;
 import org.apache.rocketmq.proxy.grpc.v2.common.ResponseBuilder;
@@ -143,41 +144,41 @@ public class ReceiveMessageResponseStreamWriter {
                 messageExt.getMsgId(),
                 ctx.isLiteConsumer() ? messageExt.getProperty(MessageConst.PROPERTY_LITE_TOPIC) : null));
         }
-        if (handleMessageList.isEmpty()) {
-            return;
-        }
-        if (handleMessageList.size() == 1) {
-            ReceiptHandleMessage handleMessage = handleMessageList.get(0);
-            this.messagingProcessor.changeInvisibleTime(
+        for (List<ReceiptHandleMessage> batch : BatchChangeInvisibleTimeUtils.groupByBroker(handleMessageList,
+            request.getGroup().getName(), request.getMessageQueue().getTopic().getName())) {
+            if (batch.size() == 1) {
+                ReceiptHandleMessage handleMessage = batch.get(0);
+                this.messagingProcessor.changeInvisibleTime(
+                    ctx,
+                    handleMessage.getReceiptHandle(),
+                    handleMessage.getMessageId(),
+                    request.getGroup().getName(),
+                    request.getMessageQueue().getTopic().getName(),
+                    NACK_INVISIBLE_TIME,
+                    handleMessage.getLiteTopic(),
+                    MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
+                    true
+                ).exceptionally(t -> {
+                    log.error("change invisible time failed when nack message after write failed. group={}, topic={}, messageId={}",
+                        request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), handleMessage.getMessageId(), t);
+                    return null;
+                });
+                continue;
+            }
+            this.messagingProcessor.batchChangeInvisibleTime(
                 ctx,
-                handleMessage.getReceiptHandle(),
-                handleMessage.getMessageId(),
+                batch,
                 request.getGroup().getName(),
                 request.getMessageQueue().getTopic().getName(),
                 NACK_INVISIBLE_TIME,
-                handleMessage.getLiteTopic(),
                 MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
                 true
             ).exceptionally(t -> {
-                log.error("change invisible time failed when nack message after write failed. group={}, topic={}, messageId={}",
-                    request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), handleMessage.getMessageId(), t);
+                log.error("batch change invisible time failed when nack messages after write failed. group={}, topic={}, size={}",
+                    request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), batch.size(), t);
                 return null;
             });
-            return;
         }
-        this.messagingProcessor.batchChangeInvisibleTime(
-            ctx,
-            handleMessageList,
-            request.getGroup().getName(),
-            request.getMessageQueue().getTopic().getName(),
-            NACK_INVISIBLE_TIME,
-            MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-            true
-        ).exceptionally(t -> {
-            log.error("batch change invisible time failed when nack messages after write failed. group={}, topic={}, size={}",
-                request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), handleMessageList.size(), t);
-            return null;
-        });
     }
 
     protected void processThrowableWhenWriteMessage(Throwable throwable,
