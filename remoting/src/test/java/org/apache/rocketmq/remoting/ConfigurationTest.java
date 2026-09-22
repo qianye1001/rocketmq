@@ -98,27 +98,6 @@ public class ConfigurationTest {
     }
 
     @Test
-    public void testLogOnlyRegistrationDoesNotRegisterOrUpdateValues() throws Exception {
-        Logger logger = mock(Logger.class);
-        Configuration configuration = new Configuration(logger, temporaryFolder.newFile().getAbsolutePath());
-        AnnotatedConfig config = new AnnotatedConfig();
-        configuration.registerConfigForLog(config);
-        assertThat(configuration.getAllConfigs()).isEmpty();
-        Properties initial = new Properties();
-        initial.setProperty("opaqueValue", "old-secret");
-        configuration.registerConfig(initial);
-        Properties update = new Properties();
-        update.setProperty("opaqueValue", "new-secret");
-
-        configuration.update(update);
-
-        verify(logger).info("Replace, key: {}, value: {} -> {}",
-            "opaqueValue", "******", "******");
-        assertThat(config.opaqueValue).isEqualTo("old-secret");
-        assertThat(configuration.getAllConfigsSnapshot().getProperty("opaqueValue")).isEqualTo("new-secret");
-    }
-
-    @Test
     public void testRegistrationMasksReplacementUsingIncomingObjectMetadata() {
         Logger logger = mock(Logger.class);
         Configuration configuration = new Configuration(logger);

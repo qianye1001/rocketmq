@@ -42,7 +42,7 @@ public class BrokerConfigLogTest {
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
-    public void testAuthConfigUpdatesMaskLogsWithoutUpdatingAuthObject() throws Exception {
+    public void testAuthConfigUpdatesMaskLogsAndPreserveRawValues() throws Exception {
         BrokerConfig brokerConfig = new BrokerConfig();
         File configFile = temporaryFolder.newFile("broker.properties");
         brokerConfig.setBrokerConfigPath(configFile.getAbsolutePath());
@@ -59,7 +59,7 @@ public class BrokerConfigLogTest {
         logger.setLevel(Level.INFO);
         try {
             Configuration configuration = controller.getConfiguration();
-            assertThat(configuration.getAllConfigs()).doesNotContainKey("authenticationEnabled");
+            assertThat(configuration.getAllConfigs()).containsEntry("authenticationEnabled", "false");
             // Populate bootstrap data after construction to avoid initializing authentication storage.
             String oldUser = "{\"username\":\"admin\",\"password\":\"old-password\"}";
             String newUser = "{\"username\":\"admin\",\"password\":\"new-password\"}";
@@ -75,6 +75,8 @@ public class BrokerConfigLogTest {
             Properties update = new Properties();
             update.setProperty("initAuthenticationUser", newUser);
             update.setProperty("innerClientAuthenticationCredentials", newCredentials);
+            update.setProperty("authenticationEnabled", "true");
+            update.setProperty("authenticationWhitelist", "11, 12");
             configuration.update(update);
 
             String logs = appender.list.stream().map(ILoggingEvent::getFormattedMessage)
@@ -83,8 +85,11 @@ public class BrokerConfigLogTest {
             assertThat(logs).contains("Replace, key: innerClientAuthenticationCredentials, value: ****** -> ******");
             assertThat(logs).doesNotContain(oldUser, newUser, oldCredentials, newCredentials,
                 "old-password", "new-password", "old-secret", "new-secret");
-            assertThat(authConfig.getInitAuthenticationUser()).isEqualTo(oldUser);
-            assertThat(authConfig.getInnerClientAuthenticationCredentials()).isEqualTo(oldCredentials);
+            assertThat(authConfig.getInitAuthenticationUser()).isEqualTo(newUser);
+            assertThat(authConfig.getInnerClientAuthenticationCredentials()).isEqualTo(newCredentials);
+            assertThat(authConfig.isAuthenticationEnabled()).isTrue();
+            assertThat(authConfig.isAuthenticationRequired("11")).isFalse();
+            assertThat(authConfig.isAuthenticationRequired("13")).isTrue();
             assertThat(configuration.getAllConfigsSnapshot()).containsAllEntriesOf(update);
             Properties persisted = MixAll.string2Properties(MixAll.file2String(configFile));
             assertThat(persisted).containsAllEntriesOf(update);
