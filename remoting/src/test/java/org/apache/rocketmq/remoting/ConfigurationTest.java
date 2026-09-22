@@ -87,7 +87,7 @@ public class ConfigurationTest {
         configuration.update(properties);
 
         verify(logger).info("Replace, key: {}, value: {} -> {}",
-            "opaqueValue", "ol******et", "ne******et");
+            "opaqueValue", "******", "******");
         verify(logger).info("Replace, key: {}, value: {} -> {}",
             "databasePassword", "old-password", "new-password");
         verify(logger, never()).info("Replace, key: {}, value: {} -> {}",
@@ -113,7 +113,7 @@ public class ConfigurationTest {
         configuration.update(update);
 
         verify(logger).info("Replace, key: {}, value: {} -> {}",
-            "opaqueValue", "ol******et", "ne******et");
+            "opaqueValue", "******", "******");
         assertThat(config.opaqueValue).isEqualTo("old-secret");
         assertThat(configuration.getAllConfigsSnapshot().getProperty("opaqueValue")).isEqualTo("new-secret");
     }
@@ -129,6 +129,6 @@ public class ConfigurationTest {
         configuration.registerConfig(new AnnotatedConfig());
 
         verify(logger).info("Replace, key: {}, value: {} -> {}",
-            "opaqueValue", "in******et", "ol******et");
+            "opaqueValue", "******", "******");
     }
 }

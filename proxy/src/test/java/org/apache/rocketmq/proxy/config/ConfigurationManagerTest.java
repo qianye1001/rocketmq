@@ -66,7 +66,7 @@ public class ConfigurationManagerTest extends InitConfigTest {
             assertNotNull(actual);
             assertTrue(actual.contains(expected.getProxyMode()));
             assertTrue(actual.contains(expected.getProxyName()));
-            assertTrue(actual.contains("\"tlsKeyPassword\":\"to******et\""));
+            assertTrue(actual.contains("\"tlsKeyPassword\":\"******\""));
             assertThat(actual).doesNotContain("top-secret");
         } finally {
             expected.setTlsKeyPassword(originalTlsKeyPassword);

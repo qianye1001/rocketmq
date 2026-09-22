@@ -55,21 +55,7 @@ public final class ConfigLogUtils {
     }
 
     public static Object maskSensitiveValue(Object value) {
-        if (value == null) {
-            return null;
-        }
-
-        String text = String.valueOf(value);
-        if (text.isEmpty()) {
-            return text;
-        }
-        if (text.length() <= 4) {
-            return REDACTED_VALUE;
-        }
-        if (text.length() <= 7) {
-            return text.substring(0, 1) + REDACTED_VALUE + text.substring(text.length() - 1);
-        }
-        return text.substring(0, 2) + REDACTED_VALUE + text.substring(text.length() - 2);
+        return value == null || "".equals(value) ? value : REDACTED_VALUE;
     }
 
     private static Set<String> getSensitiveProperties(Object configObject) {

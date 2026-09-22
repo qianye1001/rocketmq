@@ -44,7 +44,7 @@ public class MixAllTest {
 
         MixAll.printObjectProperties(logger, new ConfigWithSecret());
 
-        verify(logger).info("opaqueValue=to******et");
+        verify(logger).info("opaqueValue=******");
         verify(logger).info("listenPort=10911");
     }
 

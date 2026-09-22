@@ -79,8 +79,8 @@ public class BrokerConfigLogTest {
 
             String logs = appender.list.stream().map(ILoggingEvent::getFormattedMessage)
                 .collect(Collectors.joining("\n"));
-            assertThat(logs).contains("Replace, key: initAuthenticationUser, value: {\"******\"}");
-            assertThat(logs).contains("Replace, key: innerClientAuthenticationCredentials, value: {\"******\"}");
+            assertThat(logs).contains("Replace, key: initAuthenticationUser, value: ****** -> ******");
+            assertThat(logs).contains("Replace, key: innerClientAuthenticationCredentials, value: ****** -> ******");
             assertThat(logs).doesNotContain(oldUser, newUser, oldCredentials, newCredentials,
                 "old-password", "new-password", "old-secret", "new-secret");
             assertThat(authConfig.getInitAuthenticationUser()).isEqualTo(oldUser);

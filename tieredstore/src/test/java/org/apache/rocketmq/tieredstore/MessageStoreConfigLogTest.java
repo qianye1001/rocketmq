@@ -55,9 +55,9 @@ public class MessageStoreConfigLogTest {
         configuration.update(update);
 
         verify(logger).info("Replace, key: {}, value: {} -> {}",
-            "objectStoreAccessKey", "ol******ak", "ne******ak");
+            "objectStoreAccessKey", "******", "******");
         verify(logger).info("Replace, key: {}, value: {} -> {}",
-            "objectStoreSecretKey", "ol******sk", "ne******sk");
+            "objectStoreSecretKey", "******", "******");
         verify(logger, never()).info("Replace, key: {}, value: {} -> {}",
             "objectStoreAccessKey", "old-object-ak", "new-object-ak");
         verify(logger, never()).info("Replace, key: {}, value: {} -> {}",

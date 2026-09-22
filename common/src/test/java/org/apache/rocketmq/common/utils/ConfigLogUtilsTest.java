@@ -34,14 +34,18 @@ public class ConfigLogUtilsTest {
         AnnotatedConfig config = new AnnotatedConfig();
 
         assertThat(ConfigLogUtils.getValueForLog(config, "opaqueValue", config.opaqueValue))
-            .isEqualTo("to******et");
+            .isEqualTo("******");
     }
 
     @Test
-    public void testMaskSensitiveValueKeepsSafePrefixAndSuffix() {
+    public void testMaskSensitiveValueHidesEntireValue() {
+        assertThat(ConfigLogUtils.maskSensitiveValue("1")).isEqualTo("******");
         assertThat(ConfigLogUtils.maskSensitiveValue("1234")).isEqualTo("******");
-        assertThat(ConfigLogUtils.maskSensitiveValue("12345")).isEqualTo("1******5");
-        assertThat(ConfigLogUtils.maskSensitiveValue("12345678")).isEqualTo("12******78");
+        assertThat(ConfigLogUtils.maskSensitiveValue("12345")).isEqualTo("******");
+        assertThat(ConfigLogUtils.maskSensitiveValue("12345678")).isEqualTo("******");
+        assertThat(ConfigLogUtils.maskSensitiveValue("{\"secretKey\":\"top-secret\"}"))
+            .isEqualTo("******");
         assertThat(ConfigLogUtils.maskSensitiveValue("")).isEqualTo("");
+        assertThat(ConfigLogUtils.maskSensitiveValue(null)).isNull();
     }
 }
