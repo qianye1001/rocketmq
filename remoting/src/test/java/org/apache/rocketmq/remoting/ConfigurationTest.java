@@ -51,7 +51,6 @@ public class ConfigurationTest {
         private String customPath = "initial";
     }
 
-
     @Rule
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
@@ -96,5 +95,40 @@ public class ConfigurationTest {
         assertThat(config.opaqueValue).isEqualTo("new-secret");
         assertThat(config.databasePassword).isEqualTo("new-password");
         assertThat(configuration.getAllConfigs().getProperty("opaqueValue")).isEqualTo("new-secret");
+    }
+
+    @Test
+    public void testLogOnlyRegistrationDoesNotRegisterOrUpdateValues() throws Exception {
+        Logger logger = mock(Logger.class);
+        Configuration configuration = new Configuration(logger, temporaryFolder.newFile().getAbsolutePath());
+        AnnotatedConfig config = new AnnotatedConfig();
+        configuration.registerConfigForLog(config);
+        assertThat(configuration.getAllConfigs()).isEmpty();
+        Properties initial = new Properties();
+        initial.setProperty("opaqueValue", "old-secret");
+        configuration.registerConfig(initial);
+        Properties update = new Properties();
+        update.setProperty("opaqueValue", "new-secret");
+
+        configuration.update(update);
+
+        verify(logger).info("Replace, key: {}, value: {} -> {}",
+            "opaqueValue", "ol******et", "ne******et");
+        assertThat(config.opaqueValue).isEqualTo("old-secret");
+        assertThat(configuration.getAllConfigsSnapshot().getProperty("opaqueValue")).isEqualTo("new-secret");
+    }
+
+    @Test
+    public void testRegistrationMasksReplacementUsingIncomingObjectMetadata() {
+        Logger logger = mock(Logger.class);
+        Configuration configuration = new Configuration(logger);
+        Properties initial = new Properties();
+        initial.setProperty("opaqueValue", "initial-secret");
+        configuration.registerConfig(initial);
+
+        configuration.registerConfig(new AnnotatedConfig());
+
+        verify(logger).info("Replace, key: {}, value: {} -> {}",
+            "opaqueValue", "in******et", "ol******et");
     }
 }

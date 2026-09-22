@@ -465,6 +465,7 @@ public class BrokerController {
             brokerConfigPath,
             this.brokerConfig, this.nettyServerConfig, this.nettyClientConfig, this.messageStoreConfig
         );
+        this.configuration.registerConfigForLog(this.authConfig);
 
         this.brokerStatsManager.setProducerStateGetter(new BrokerStatsManager.StateGetter() {
             @Override

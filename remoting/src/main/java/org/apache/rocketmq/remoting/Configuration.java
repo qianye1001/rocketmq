@@ -36,6 +36,7 @@ public class Configuration {
     private final Logger log;
 
     private List<Object> configObjectList = new ArrayList<>(4);
+    private final List<Object> configLogObjectList = new ArrayList<>(4);
     private String storePath;
     private boolean storePathFromConfig = false;
     private Object storePathObject;
@@ -82,6 +83,7 @@ public class Configuration {
 
                 Properties registerProps = MixAll.object2Properties(configObject);
 
+                configLogObjectList.add(configObject);
                 merge(registerProps, this.allConfigs);
 
                 configObjectList.add(configObject);
@@ -90,6 +92,27 @@ public class Configuration {
             }
         } catch (InterruptedException e) {
             log.error("registerConfig lock error");
+        }
+        return this;
+    }
+
+    /**
+     * Register field metadata for log masking without adding, updating, or persisting
+     * the object's configuration values.
+     */
+    public Configuration registerConfigForLog(Object configObject) {
+        if (configObject == null) {
+            return this;
+        }
+        try {
+            readWriteLock.writeLock().lockInterruptibly();
+            try {
+                configLogObjectList.add(configObject);
+            } finally {
+                readWriteLock.writeLock().unlock();
+            }
+        } catch (InterruptedException e) {
+            log.error("registerConfigForLog lock error");
         }
         return this;
     }
@@ -360,8 +383,8 @@ public class Configuration {
 
     private void logConfigChange(Object key, Object oldValue, Object newValue) {
         String propertyName = String.valueOf(key);
-        Object oldValueForLog = ConfigLogUtils.getValueForLog(configObjectList, propertyName, oldValue);
-        Object newValueForLog = ConfigLogUtils.getValueForLog(configObjectList, propertyName, newValue);
+        Object oldValueForLog = ConfigLogUtils.getValueForLog(configLogObjectList, propertyName, oldValue);
+        Object newValueForLog = ConfigLogUtils.getValueForLog(configLogObjectList, propertyName, newValue);
         log.info("Replace, key: {}, value: {} -> {}", key, oldValueForLog, newValueForLog);
     }
 
