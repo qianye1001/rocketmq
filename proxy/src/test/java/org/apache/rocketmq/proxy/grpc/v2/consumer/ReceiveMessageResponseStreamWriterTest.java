@@ -223,6 +223,9 @@ public class ReceiveMessageResponseStreamWriterTest extends BaseActivityTest {
         List<MessageExt> messageExtList = new ArrayList<>();
         messageExtList.add(createMessageExt(TOPIC, "tag"));
         messageExtList.add(createMessageExt(TOPIC, "tag"));
+        for (MessageExt messageExt : messageExtList) {
+            MessageAccessor.putProperty(messageExt, MessageConst.PROPERTY_LITE_TOPIC, "lite-topic");
+        }
         writer.writeAndComplete(
             ProxyContext.create(),
             createReceiveMessageRequest(),
@@ -237,6 +240,9 @@ public class ReceiveMessageResponseStreamWriterTest extends BaseActivityTest {
         verify(this.messagingProcessor, never()).changeInvisibleTime(
             any(), any(), anyString(), anyString(), anyString(), anyLong(), any(), anyLong(), anyBoolean());
         assertEquals(2, handleMessageListCaptor.getValue().size());
+        for (Object handleMessage : handleMessageListCaptor.getValue()) {
+            assertEquals(null, ((ReceiptHandleMessage) handleMessage).getLiteTopic());
+        }
         assertEquals(messageExtList.get(0).getMsgId(),
             ((ReceiptHandleMessage) handleMessageListCaptor.getValue().get(0)).getMessageId());
         assertEquals(messageExtList.get(1).getMsgId(),
