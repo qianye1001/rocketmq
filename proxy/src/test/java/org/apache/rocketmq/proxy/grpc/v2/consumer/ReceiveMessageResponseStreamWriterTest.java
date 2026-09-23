@@ -355,6 +355,42 @@ public class ReceiveMessageResponseStreamWriterTest extends BaseActivityTest {
             eq(org.apache.rocketmq.proxy.processor.MessagingProcessor.DEFAULT_TIMEOUT_MILLS), eq(true));
     }
 
+    @Test
+    public void testNackChunksWaitOnlyForTheSameBroker() {
+        ConfigurationManager.getProxyConfig().setEnableBatchChangeInvisibleTime(true);
+        ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
+        List<List<ReceiptHandleMessage>> requests = new ArrayList<>();
+        List<CompletableFuture<List<BatchChangeInvisibleTimeResult>>> responses = new ArrayList<>();
+        doAnswer(invocation -> {
+            requests.add(new ArrayList<>(invocation.getArgument(1)));
+            CompletableFuture<List<BatchChangeInvisibleTimeResult>> response = new CompletableFuture<>();
+            responses.add(response);
+            return response;
+        }).when(messagingProcessor).batchChangeInvisibleTime(any(), anyList(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
+        List<MessageExt> messages = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            MessageExt message = createMessageExt(TOPIC, "tag");
+            MessageAccessor.putProperty(message, MessageConst.PROPERTY_POP_CK,
+                ExtraInfoUtil.buildExtraInfo(0, System.currentTimeMillis(), 60000, 1, TOPIC,
+                    i < 4 ? "slow" : "fast", 0, i));
+            messages.add(message);
+        }
+        writer.processThrowableWhenWriteMessages(new RuntimeException("cancelled"), ProxyContext.create(),
+            createReceiveMessageRequest(), messages);
+        assertEquals(2, requests.size());
+        assertEquals("slow", requests.get(0).get(0).getReceiptHandle().getBrokerName());
+        assertEquals("fast", requests.get(1).get(0).getReceiptHandle().getBrokerName());
+        responses.get(1).complete(new ArrayList<>());
+        assertEquals(2, requests.size());
+        responses.get(0).completeExceptionally(new RuntimeException("first chunk failed"));
+        assertEquals(3, requests.size());
+        assertEquals("slow", requests.get(2).get(0).getReceiptHandle().getBrokerName());
+        for (List<ReceiptHandleMessage> request : requests) {
+            assertEquals(2, request.size());
+        }
+        responses.get(2).complete(new ArrayList<>());
+    }
+
     private static ReceiveMessageRequest createReceiveMessageRequest() {
         return ReceiveMessageRequest.newBuilder()
             .setGroup(Resource.newBuilder().setName(CONSUMER_GROUP).build())

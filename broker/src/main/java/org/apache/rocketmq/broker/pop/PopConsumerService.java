@@ -56,7 +56,6 @@ import org.apache.rocketmq.common.message.MessageDecoder;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageExtBrokerInner;
 import org.apache.rocketmq.common.utils.ConcurrentHashMapUtils;
-import org.apache.rocketmq.remoting.protocol.body.ChangeInvisibleTimeRequestEntry;
 import org.apache.rocketmq.remoting.protocol.header.ExtraInfoUtil;
 import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
 import org.apache.rocketmq.store.AppendMessageStatus;
@@ -554,50 +553,18 @@ public class PopConsumerService extends ServiceThread {
         }
     }
 
-    public void batchChangeInvisibilityDuration(List<ChangeInvisibleTimeRequestEntry> changeRecords) {
-        if (changeRecords == null || changeRecords.isEmpty()) {
-            return;
+    public void batchChangeInvisibilityDuration(String groupId, List<PopConsumerRecord> ckRecords,
+        List<PopConsumerRecord> ackRecords) {
+        boolean skipWrite = brokerConfig.isPopReviveSkipIfGroupAbsent()
+            && !brokerController.getSubscriptionGroupManager().containsSubscriptionGroup(groupId);
+        if (brokerConfig.isPopConsumerKVServiceLog()) {
+            log.info("PopConsumerService batch change, groupId={}, size={}, skipWrite={}", groupId, ackRecords.size(), skipWrite);
         }
-
-        List<PopConsumerRecord> ckRecords = new ArrayList<>(changeRecords.size());
-        List<PopConsumerRecord> ackRecords = new ArrayList<>(changeRecords.size());
-
-        for (ChangeInvisibleTimeRequestEntry changeRecord : changeRecords) {
-            if (brokerConfig.isPopConsumerKVServiceLog()) {
-                log.info("PopConsumerService batch change, time={}, invisible={}, " +
-                        "groupId={}, topic={}, queueId={}, offset={}, new time={}, new invisible={}",
-                    changeRecord.getPopTime(), changeRecord.getOldInvisibleTime(), changeRecord.getConsumerGroup(),
-                    changeRecord.getTopic(), changeRecord.getQueueId(), changeRecord.getOffset(),
-                    changeRecord.getChangedPopTime(), changeRecord.getChangedInvisibleTime());
-            }
-
-            PopConsumerRecord ackRecord = new PopConsumerRecord(
-                changeRecord.getPopTime(), changeRecord.getConsumerGroup(), changeRecord.getTopic(),
-                changeRecord.getQueueId(), 0, changeRecord.getOldInvisibleTime(), changeRecord.getOffset(),
-                null, changeRecord.isSuspend());
-            ackRecords.add(ackRecord);
-
-            boolean skipWrite = brokerConfig.isPopReviveSkipIfGroupAbsent() &&
-                !brokerController.getSubscriptionGroupManager().containsSubscriptionGroup(changeRecord.getConsumerGroup());
-
-            if (skipWrite) {
-                log.info("PopConsumerService batch change invisibility skip, time={}, " +
-                    "groupId={}, topicId={}, queueId={}, offset={}", changeRecord.getPopTime(),
-                    changeRecord.getConsumerGroup(), changeRecord.getTopic(), changeRecord.getQueueId(),
-                    changeRecord.getOffset());
-            } else {
-                PopConsumerRecord ckRecord = new PopConsumerRecord(
-                    changeRecord.getChangedPopTime(), changeRecord.getConsumerGroup(), changeRecord.getTopic(),
-                    changeRecord.getQueueId(), 0, changeRecord.getChangedInvisibleTime(), changeRecord.getOffset(),
-                    null, changeRecord.isSuspend());
-                ckRecords.add(ckRecord);
-            }
-        }
-
+        List<PopConsumerRecord> writes = skipWrite ? Collections.emptyList() : ckRecords;
         if (brokerConfig.isEnablePopBufferMerge() && popConsumerCache != null) {
-            popConsumerCache.writeAndDeleteRecords(ckRecords, ackRecords);
+            popConsumerCache.writeAndDeleteRecords(writes, ackRecords);
         } else {
-            this.popConsumerStore.writeAndDeleteRecords(ckRecords, ackRecords);
+            popConsumerStore.writeAndDeleteRecords(writes, ackRecords);
         }
     }
 

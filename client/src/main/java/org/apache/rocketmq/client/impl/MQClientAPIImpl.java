@@ -1078,7 +1078,7 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
                             future.completeExceptionally(new MQBrokerException(response.getCode(), response.getRemark(), addr));
                             return;
                         }
-                        future.complete(processBatchChangeInvisibleTimeResponse(addr, requestBody, response));
+                        future.complete(processBatchChangeInvisibleTimeResponse(addr, topic, requestBody, response));
                     } catch (Throwable t) {
                         future.completeExceptionally(t);
                     }
@@ -1095,7 +1095,7 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
         return future;
     }
 
-    protected List<AckResult> processBatchChangeInvisibleTimeResponse(String addr,
+    protected List<AckResult> processBatchChangeInvisibleTimeResponse(String addr, String topic,
         BatchChangeInvisibleTimeRequestBody requestBody, RemotingCommand response) throws MQBrokerException {
         List<ChangeInvisibleTimeRequestEntry> requestEntries = requestBody == null || requestBody.getEntries() == null ?
             Collections.emptyList() : requestBody.getEntries();
@@ -1120,7 +1120,7 @@ public class MQClientAPIImpl implements NameServerUpdateCallback, StartAndShutdo
                 String brokerName = ExtraInfoUtil.getBrokerName(ExtraInfoUtil.split(requestEntry.getExtraInfo()));
                 ackResult.setExtraInfo(ExtraInfoUtil
                     .buildExtraInfo(requestEntry.getOffset(), responseEntry.getPopTime(), responseEntry.getInvisibleTime(),
-                        responseEntry.getReviveQid(), requestEntry.getTopic(), brokerName, requestEntry.getQueueId()) + MessageConst.KEY_SEPARATOR
+                        responseEntry.getReviveQid(), topic, brokerName, requestEntry.getQueueId()) + MessageConst.KEY_SEPARATOR
                     + requestEntry.getOffset());
             } else {
                 ackResult.setStatus(AckStatus.NO_EXIST);

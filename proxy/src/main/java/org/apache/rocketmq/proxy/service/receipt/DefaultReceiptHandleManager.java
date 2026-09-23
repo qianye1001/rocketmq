@@ -20,7 +20,6 @@ package org.apache.rocketmq.proxy.service.receipt;
 import com.google.common.base.Stopwatch;
 import io.netty.channel.Channel;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +49,7 @@ import org.apache.rocketmq.common.utils.ThreadUtils;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
+import org.apache.rocketmq.proxy.common.BatchRenewEvent;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
@@ -72,6 +72,7 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
     protected final ConsumerManager consumerManager;
     protected final ConcurrentMap<ReceiptHandleGroupKey, ReceiptHandleGroup> receiptHandleGroupMap;
     protected final StateEventListener<RenewEvent> eventListener;
+    private final StateEventListener<BatchRenewEvent> batchEventListener;
     protected final static RetryPolicy RENEW_POLICY = new RenewStrategyPolicy();
     protected final ScheduledExecutorService scheduledExecutorService =
         ThreadUtils.newSingleThreadScheduledExecutor(new ThreadFactoryImpl("RenewalScheduledThread_"));
@@ -79,6 +80,12 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
     protected final ThreadPoolExecutor returnHandleGroupWorkerService;
 
     public DefaultReceiptHandleManager(MetadataService metadataService, ConsumerManager consumerManager, StateEventListener<RenewEvent> eventListener) {
+        this(metadataService, consumerManager, eventListener, null);
+    }
+
+    public DefaultReceiptHandleManager(MetadataService metadataService, ConsumerManager consumerManager,
+        StateEventListener<RenewEvent> eventListener, StateEventListener<BatchRenewEvent> batchEventListener) {
+        this.batchEventListener = batchEventListener;
         this.metadataService = metadataService;
         this.consumerManager = consumerManager;
         this.eventListener = eventListener;
@@ -172,7 +179,7 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
                 }
 
                 ReceiptHandleGroup group = entry.getValue();
-                if (proxyConfig.isEnableBatchChangeInvisibleTime()) {
+                if (batchEventListener != null && proxyConfig.isEnableBatchChangeInvisibleTime()) {
                     List<RenewMessage> renewMessageList = new ArrayList<>();
                     group.scan((msgID, handleStr, v) -> {
                         long current = System.currentTimeMillis();
@@ -215,7 +222,10 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
     protected CompletableFuture<MessageReceiptHandle> startRenewMessage(ProxyContext context, ReceiptHandleGroupKey key, MessageReceiptHandle messageReceiptHandle) {
         RenewEventData renewEventData = prepareRenewMessage(context, key, messageReceiptHandle);
         if (renewEventData.getEventType() != null) {
-            fireRenewEvent(key, Collections.singletonList(renewEventData));
+            CompletableFuture<AckResult> future = new CompletableFuture<>();
+            future.whenComplete((result, throwable) -> completeRenewMessage(renewEventData, result, throwable));
+            fireEvent(new RenewEvent(key, messageReceiptHandle, renewEventData.getRenewTime(),
+                renewEventData.getEventType(), future));
         }
         return renewEventData.getResultFuture();
     }
@@ -228,12 +238,8 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
         }
         int batchMaxNum = Math.max(1, ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum());
         for (List<RenewMessage> messages : brokerBatches.values()) {
-            CompletableFuture<Void> brokerFuture = CompletableFuture.completedFuture(null);
-            for (int from = 0; from < messages.size(); from += batchMaxNum) {
-                List<RenewMessage> batch = messages.subList(from, Math.min(messages.size(), from + batchMaxNum));
-                // Only lock handles when their batch is ready to send. Release them before starting the next batch.
-                brokerFuture = brokerFuture.thenCompose(ignored -> renewBatch(context, key, group, batch));
-            }
+            BatchChangeInvisibleTimeUtils.sendBatches(messages, batchMaxNum,
+                batch -> renewBatch(context, key, group, batch));
         }
     }
 
@@ -265,13 +271,7 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
         if (eventDataList.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
-        List<MessageReceiptHandle> handles = new ArrayList<>(eventDataList.size());
-        List<Long> times = new ArrayList<>(eventDataList.size());
-        for (RenewEventData data : eventDataList) {
-            handles.add(data.getMessageReceiptHandle());
-            times.add(data.getRenewTime());
-        }
-        RenewEvent event = new RenewEvent(key, handles, times, eventDataList.get(0).getEventType());
+        BatchRenewEvent event = new BatchRenewEvent(key, eventDataList, eventDataList.get(0).getEventType());
         CompletableFuture<Void> completion = event.getFuture().handle((results, throwable) -> {
             for (int i = 0; i < eventDataList.size(); i++) {
                 BatchChangeInvisibleTimeResult result = results != null && i < results.size() ? results.get(i) : null;
@@ -284,7 +284,11 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
             }
             return null;
         });
-        fireEvent(event);
+        try {
+            batchEventListener.fireEvent(event);
+        } catch (Throwable t) {
+            event.getFuture().completeExceptionally(t);
+        }
         return completion;
     }
 
@@ -373,14 +377,14 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
             return;
         }
         ProxyConfig proxyConfig = ConfigurationManager.getProxyConfig();
-        if (proxyConfig.isEnableBatchChangeInvisibleTime()) {
+        if (batchEventListener != null && proxyConfig.isEnableBatchChangeInvisibleTime()) {
             fireClearGroupEventBatch(key, handleGroup, proxyConfig);
         } else {
             handleGroup.scan((msgId, handle, v) -> {
                 try {
                     handleGroup.computeIfPresent(msgId, handle, messageReceiptHandle -> {
                         fireEvent(new RenewEvent(key, messageReceiptHandle,
-                            proxyConfig.getInvisibleTimeMillisWhenClear(), RenewEvent.EventType.CLEAR_GROUP));
+                            proxyConfig.getInvisibleTimeMillisWhenClear(), RenewEvent.EventType.CLEAR_GROUP, new CompletableFuture<>()));
                         return CompletableFuture.completedFuture(null);
                     }, 0);
                 } catch (Exception e) {
@@ -397,13 +401,14 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
 
     protected void fireClearGroupEventBatch(ReceiptHandleGroupKey key, ReceiptHandleGroup handleGroup,
         ProxyConfig proxyConfig) {
-        Map<List<String>, List<MessageReceiptHandle>> brokerBatches = new LinkedHashMap<>();
+        Map<List<String>, List<BatchRenewEvent.Entry>> brokerBatches = new LinkedHashMap<>();
         handleGroup.scan((msgID, handle, v) -> {
             try {
                 handleGroup.computeIfPresent(msgID, handle, message -> {
                     ReceiptHandle receipt = ReceiptHandle.decode(message.getReceiptHandleStr());
                     brokerBatches.computeIfAbsent(BatchChangeInvisibleTimeUtils.batchKey(receipt,
-                        message.getGroup(), message.getTopic()), ignored -> new ArrayList<>()).add(message);
+                        message.getGroup(), message.getTopic()), ignored -> new ArrayList<>())
+                        .add(new BatchRenewEvent.Entry(message, proxyConfig.getInvisibleTimeMillisWhenClear()));
                     return CompletableFuture.completedFuture(null);
                 }, 0);
             } catch (Exception e) {
@@ -411,18 +416,12 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
             }
         });
         int batchMaxNum = Math.max(1, proxyConfig.getBatchChangeInvisibleTimeMaxNum());
-        for (List<MessageReceiptHandle> messages : brokerBatches.values()) {
-            CompletableFuture<Void> brokerFuture = CompletableFuture.completedFuture(null);
-            for (int from = 0; from < messages.size(); from += batchMaxNum) {
-                List<MessageReceiptHandle> batch = messages.subList(from, Math.min(messages.size(), from + batchMaxNum));
-                brokerFuture = brokerFuture.thenCompose(ignored -> {
-                    RenewEvent event = new RenewEvent(key, batch,
-                        Collections.nCopies(batch.size(), proxyConfig.getInvisibleTimeMillisWhenClear()),
-                        RenewEvent.EventType.CLEAR_GROUP);
-                    fireEvent(event);
-                    return event.getFuture().handle((results, throwable) -> null);
-                });
-            }
+        for (List<BatchRenewEvent.Entry> messages : brokerBatches.values()) {
+            BatchChangeInvisibleTimeUtils.sendBatches(messages, batchMaxNum, batch -> {
+                BatchRenewEvent event = new BatchRenewEvent(key, batch, RenewEvent.EventType.CLEAR_GROUP);
+                batchEventListener.fireEvent(event);
+                return event.getFuture();
+            });
         }
     }
 
@@ -472,17 +471,14 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
         }
     }
 
-    protected static class RenewEventData {
-        private final MessageReceiptHandle messageReceiptHandle;
-        private final long renewTime;
+    protected static class RenewEventData extends BatchRenewEvent.Entry {
         private final RenewEvent.EventType eventType;
         private final CompletableFuture<MessageReceiptHandle> resultFuture;
 
         public RenewEventData(MessageReceiptHandle messageReceiptHandle, long renewTime,
             RenewEvent.EventType eventType,
             CompletableFuture<MessageReceiptHandle> resultFuture) {
-            this.messageReceiptHandle = messageReceiptHandle;
-            this.renewTime = renewTime;
+            super(messageReceiptHandle, renewTime);
             this.eventType = eventType;
             this.resultFuture = resultFuture;
         }
@@ -491,14 +487,6 @@ public class DefaultReceiptHandleManager extends AbstractStartAndShutdown implem
             CompletableFuture<MessageReceiptHandle> resultFuture, MessageReceiptHandle result) {
             resultFuture.complete(result);
             return new RenewEventData(messageReceiptHandle, 0, null, resultFuture);
-        }
-
-        public MessageReceiptHandle getMessageReceiptHandle() {
-            return messageReceiptHandle;
-        }
-
-        public long getRenewTime() {
-            return renewTime;
         }
 
         public RenewEvent.EventType getEventType() {

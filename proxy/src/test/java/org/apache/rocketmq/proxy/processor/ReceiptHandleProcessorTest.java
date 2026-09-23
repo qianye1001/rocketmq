@@ -261,33 +261,23 @@ public class ReceiptHandleProcessorTest extends InitConfigTest {
     }
 
     @Test
-    public void testClientOfflineClearGroupWithSingleHandleUseSingleChangeInvisibleTime() throws Exception {
+    public void testClientOfflineClearGroupWithSingleHandle() throws Exception {
         ConfigurationManager.getProxyConfig().setEnableBatchChangeInvisibleTime(true);
-        ArgumentCaptor<ConsumerIdsChangeListener> listenerArgumentCaptor =
-            ArgumentCaptor.forClass(ConsumerIdsChangeListener.class);
-        Mockito.verify(consumerManager).appendConsumerIdsChangeListener(listenerArgumentCaptor.capture());
-
-        AckResult ackResult = new AckResult();
-        ackResult.setStatus(AckStatus.OK);
-        Mockito.when(messagingProcessor.changeInvisibleTime(
-                Mockito.any(ProxyContext.class), Mockito.any(ReceiptHandle.class), Mockito.eq(MESSAGE_ID),
-                Mockito.eq(CONSUMER_GROUP), Mockito.eq(TOPIC),
-                Mockito.eq(ConfigurationManager.getProxyConfig().getInvisibleTimeMillisWhenClear()), Mockito.eq(null)))
-            .thenReturn(CompletableFuture.completedFuture(ackResult));
-
-        receiptHandleProcessor.addReceiptHandle(
-            PROXY_CONTEXT, PROXY_CONTEXT.getChannel(), CONSUMER_GROUP, MSG_ID, messageReceiptHandle);
-
-        listenerArgumentCaptor.getValue().handle(ConsumerGroupEvent.CLIENT_UNREGISTER, CONSUMER_GROUP,
+        ArgumentCaptor<ConsumerIdsChangeListener> listener = ArgumentCaptor.forClass(ConsumerIdsChangeListener.class);
+        Mockito.verify(consumerManager).appendConsumerIdsChangeListener(listener.capture());
+        ArgumentCaptor<List> handles = ArgumentCaptor.forClass(List.class);
+        Mockito.when(messagingProcessor.batchChangeInvisibleTime(Mockito.any(), handles.capture(), Mockito.anyString(),
+            Mockito.anyString(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyBoolean()))
+            .thenReturn(CompletableFuture.completedFuture(new ArrayList<>()));
+        receiptHandleProcessor.addReceiptHandle(PROXY_CONTEXT, PROXY_CONTEXT.getChannel(), CONSUMER_GROUP, MSG_ID, messageReceiptHandle);
+        listener.getValue().handle(ConsumerGroupEvent.CLIENT_UNREGISTER, CONSUMER_GROUP,
             new ClientChannelInfo(PROXY_CONTEXT.getChannel(), "clientId", LanguageCode.JAVA, 0));
-
-        Mockito.verify(messagingProcessor, Mockito.timeout(10000).times(1)).changeInvisibleTime(
-            Mockito.any(ProxyContext.class), Mockito.any(ReceiptHandle.class), Mockito.eq(MESSAGE_ID),
+        Mockito.verify(messagingProcessor, Mockito.timeout(10000)).batchChangeInvisibleTime(Mockito.any(), Mockito.anyList(),
             Mockito.eq(CONSUMER_GROUP), Mockito.eq(TOPIC),
-            Mockito.eq(ConfigurationManager.getProxyConfig().getInvisibleTimeMillisWhenClear()), Mockito.eq(null));
-        Mockito.verify(messagingProcessor, Mockito.never()).batchChangeInvisibleTime(
-            Mockito.any(), Mockito.anyList(), Mockito.anyString(), Mockito.anyString(), Mockito.anyLong(),
-            Mockito.anyLong(), Mockito.anyBoolean());
+            Mockito.eq(ConfigurationManager.getProxyConfig().getInvisibleTimeMillisWhenClear()),
+            Mockito.eq(MessagingProcessor.DEFAULT_TIMEOUT_MILLS), Mockito.eq(false));
+        assertEquals(1, handles.getValue().size());
+        assertEquals(MESSAGE_ID, ((ReceiptHandleMessage) handles.getValue().get(0)).getMessageId());
     }
 
     @Test

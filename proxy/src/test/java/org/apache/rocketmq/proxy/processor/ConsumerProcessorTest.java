@@ -36,6 +36,7 @@ import org.apache.rocketmq.client.consumer.AckStatus;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PopStatus;
 import org.apache.rocketmq.client.exception.MQBrokerException;
+import org.apache.rocketmq.client.impl.mqclient.MQClientAPIFactory;
 import org.apache.rocketmq.common.BrokerConfig;
 import org.apache.rocketmq.common.KeyBuilder;
 import org.apache.rocketmq.common.MixAll;
@@ -52,6 +53,7 @@ import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
+import org.apache.rocketmq.proxy.service.message.ClusterMessageService;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
 import org.apache.rocketmq.proxy.service.route.MessageQueueView;
@@ -487,86 +489,41 @@ public class ConsumerProcessorTest extends BaseProcessorTest {
     }
 
     @Test
-    public void testBatchChangeInvisibleTimeSplitOversizedBrokerGroup() throws Throwable {
-        String brokerName = "brokerName1";
-        assertEquals(2048, ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum());
-        int batchMaxNum = ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum();
-        List<ReceiptHandleMessage> receiptHandleMessageList = new ArrayList<>();
-        long now = System.currentTimeMillis();
-        for (int i = 0; i <= batchMaxNum; i++) {
-            MessageExt brokerMessage = createMessageExt(TOPIC, "", 0, 3000, now,
-                0, 0, 0, i + 1, brokerName);
-            receiptHandleMessageList.add(new ReceiptHandleMessage(create(brokerMessage), brokerMessage.getMsgId()));
-        }
-
-        ArgumentCaptor<List> batchHandleListCaptor = ArgumentCaptor.forClass(List.class);
-        doAnswer((Answer<CompletableFuture<List<AckResult>>>) invocation -> {
-            List<ReceiptHandleMessage> handleMessageList = invocation.getArgument(1, List.class);
-            List<AckResult> ackResultList = new ArrayList<>();
-            for (ReceiptHandleMessage ignored : handleMessageList) {
-                AckResult ackResult = new AckResult();
-                ackResult.setStatus(AckStatus.OK);
-                ackResultList.add(ackResult);
+    public void testLegacyMessageServiceRetainsSingleMessageExtensionHooks() throws Exception {
+        ConfigurationManager.getProxyConfig().setEnableBatchChangeInvisibleTime(true);
+        MQClientAPIFactory factory = mock(MQClientAPIFactory.class);
+        List<String> mappedTopics = new ArrayList<>();
+        ClusterMessageService legacy = new ClusterMessageService(topicRouteService, factory) {
+            @Override
+            public CompletableFuture<AckResult> changeInvisibleTime(ProxyContext ctx, ReceiptHandle handle,
+                String messageId, ChangeInvisibleTimeRequestHeader header, long timeoutMillis) {
+                mappedTopics.add(ctx.getVal("instance") + "/" + header.getTopic());
+                AckResult result = new AckResult();
+                result.setStatus(AckStatus.OK);
+                return CompletableFuture.completedFuture(result);
             }
-            return CompletableFuture.completedFuture(ackResultList);
-        }).when(this.messageService).batchChangeInvisibleTime(
-            any(), batchHandleListCaptor.capture(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-
-        AckResult singleAckResult = new AckResult();
-        singleAckResult.setStatus(AckStatus.OK);
-        when(this.messageService.changeInvisibleTime(any(), any(), anyString(), any(), anyLong()))
-            .thenReturn(CompletableFuture.completedFuture(singleAckResult));
-
-        List<BatchChangeInvisibleTimeResult> resultList = this.consumerProcessor.batchChangeInvisibleTime(
-            createContext(), receiptHandleMessageList, CONSUMER_GROUP, TOPIC, 3000, 3000, true).get();
-
-        assertEquals(receiptHandleMessageList.size(), resultList.size());
-        assertEquals(batchMaxNum, batchHandleListCaptor.getValue().size());
-        verify(this.messageService).batchChangeInvisibleTime(
-            any(), anyList(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-        verify(this.messageService).changeInvisibleTime(any(), any(), anyString(), any(), anyLong());
+        };
+        when(serviceManager.getMessageService()).thenReturn(legacy);
+        List<BatchChangeInvisibleTimeResult> results = consumerProcessor.batchChangeInvisibleTime(
+            createContext().withVal("instance", "tenant"), buildReceiptHandleMessages("broker", 2),
+            CONSUMER_GROUP, TOPIC, 30000, 3000, false).get();
+        assertEquals(2, results.size());
+        assertEquals(Arrays.asList("tenant/" + TOPIC, "tenant/" + TOPIC), mappedTopics);
+        org.mockito.Mockito.verifyZeroInteractions(factory);
     }
 
     @Test
-    public void testBatchChangeInvisibleTimeSplitOversizedBrokerGroupSequentially() throws Throwable {
-        String brokerName = "brokerName1";
-        int batchMaxNum = 2;
-        ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(batchMaxNum);
-        List<ReceiptHandleMessage> receiptHandleMessageList = new ArrayList<>();
-        long now = System.currentTimeMillis();
-        for (int i = 0; i < batchMaxNum * 2; i++) {
-            MessageExt brokerMessage = createMessageExt(TOPIC, "", 0, 3000, now,
-                0, 0, 0, i + 1, brokerName);
-            receiptHandleMessageList.add(new ReceiptHandleMessage(create(brokerMessage), brokerMessage.getMsgId()));
+    public void testBatchChangeInvisibleTimeRejectsOversizedInput() throws Throwable {
+        ConfigurationManager.getProxyConfig().setBatchChangeInvisibleTimeMaxNum(2);
+        try {
+            consumerProcessor.batchChangeInvisibleTime(createContext(), buildReceiptHandleMessages("broker", 3),
+                CONSUMER_GROUP, TOPIC, 3000, 3000, true).get();
+            fail("the caller must split oversized batches");
+        } catch (ExecutionException e) {
+            assertTrue(e.getCause() instanceof IllegalArgumentException);
         }
-
-        List<CompletableFuture<List<AckResult>>> batchFutures = new ArrayList<>();
-        ArgumentCaptor<List> batchHandleListCaptor = ArgumentCaptor.forClass(List.class);
-        doAnswer((Answer<CompletableFuture<List<AckResult>>>) invocation -> {
-            CompletableFuture<List<AckResult>> batchFuture = new CompletableFuture<>();
-            batchFutures.add(batchFuture);
-            return batchFuture;
-        }).when(this.messageService).batchChangeInvisibleTime(
-            any(), batchHandleListCaptor.capture(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-
-        CompletableFuture<List<BatchChangeInvisibleTimeResult>> resultFuture = this.consumerProcessor.batchChangeInvisibleTime(
-            createContext(), receiptHandleMessageList, CONSUMER_GROUP, TOPIC, 3000, 3000, true);
-
-        assertEquals(1, batchFutures.size());
-        assertEquals(batchMaxNum, batchHandleListCaptor.getAllValues().get(0).size());
-        assertFalse(resultFuture.isDone());
-
-        batchFutures.get(0).complete(buildAckResultList(batchMaxNum));
-        assertEquals(2, batchFutures.size());
-        assertEquals(batchMaxNum, batchHandleListCaptor.getAllValues().get(1).size());
-        assertFalse(resultFuture.isDone());
-
-        batchFutures.get(1).complete(buildAckResultList(batchMaxNum));
-        List<BatchChangeInvisibleTimeResult> resultList = resultFuture.get();
-        assertEquals(receiptHandleMessageList.size(), resultList.size());
-        verify(this.messageService, times(2)).batchChangeInvisibleTime(
+        verify(messageService, never()).batchChangeInvisibleTime(
             any(), anyList(), anyString(), anyString(), anyLong(), anyLong(), anyBoolean());
-        verify(this.messageService, never()).changeInvisibleTime(any(), any(), anyString(), any(), anyLong());
     }
 
     @Test

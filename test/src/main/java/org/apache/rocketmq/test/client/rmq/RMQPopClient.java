@@ -174,8 +174,6 @@ public class RMQPopClient implements MQConsumer {
             for (String extraInfo : extraInfoList) {
                 String[] extraInfoStrs = ExtraInfoUtil.split(extraInfo);
                 ChangeInvisibleTimeRequestEntry entry = new ChangeInvisibleTimeRequestEntry();
-                entry.setConsumerGroup(consumerGroup);
-                entry.setTopic(ExtraInfoUtil.getRealTopic(extraInfoStrs, topic, consumerGroup));
                 entry.setQueueId(ExtraInfoUtil.getQueueId(extraInfoStrs));
                 entry.setOffset(ExtraInfoUtil.getQueueOffset(extraInfoStrs));
                 entry.setExtraInfo(extraInfo);
@@ -183,7 +181,8 @@ public class RMQPopClient implements MQConsumer {
                 entries.add(entry);
             }
             requestBody.setEntries(entries);
-            String requestTopic = entries.isEmpty() ? topic : entries.get(0).getTopic();
+            String requestTopic = extraInfoList.isEmpty() ? topic
+                : ExtraInfoUtil.getRealTopic(ExtraInfoUtil.split(extraInfoList.get(0)), topic, consumerGroup);
             return this.mqClientAPI.batchChangeInvisibleTimeAsync(
                 brokerAddr, requestTopic, consumerGroup, requestBody, DEFAULT_TIMEOUT);
         } catch (Throwable t) {

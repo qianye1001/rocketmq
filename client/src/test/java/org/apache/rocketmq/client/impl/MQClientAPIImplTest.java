@@ -731,8 +731,6 @@ public class MQClientAPIImplTest {
     public void testProcessBatchChangeInvisibleTimeResponse() throws Exception {
         BatchChangeInvisibleTimeRequestBody requestBody = new BatchChangeInvisibleTimeRequestBody();
         ChangeInvisibleTimeRequestEntry requestEntry = new ChangeInvisibleTimeRequestEntry();
-        requestEntry.setConsumerGroup(group);
-        requestEntry.setTopic(topic);
         requestEntry.setQueueId(1);
         requestEntry.setExtraInfo("10 100 1000 0 0 broker-a 1 11");
         requestEntry.setOffset(11);
@@ -752,7 +750,7 @@ public class MQClientAPIImplTest {
         response.setBody(responseBody.encode());
 
         List<AckResult> resultList =
-            mqClientAPI.processBatchChangeInvisibleTimeResponse(brokerAddr, requestBody, response);
+            mqClientAPI.processBatchChangeInvisibleTimeResponse(brokerAddr, topic, requestBody, response);
 
         assertThat(resultList).hasSize(1);
         assertThat(resultList.get(0).getStatus()).isEqualTo(AckStatus.OK);
@@ -770,8 +768,6 @@ public class MQClientAPIImplTest {
     public void testProcessBatchChangeInvisibleTimeResponseWithNullEntry() throws Exception {
         BatchChangeInvisibleTimeRequestBody requestBody = new BatchChangeInvisibleTimeRequestBody();
         ChangeInvisibleTimeRequestEntry requestEntry = new ChangeInvisibleTimeRequestEntry();
-        requestEntry.setConsumerGroup(group);
-        requestEntry.setTopic(topic);
         requestEntry.setQueueId(1);
         requestEntry.setExtraInfo("10 100 1000 0 0 broker-a 1 11");
         requestEntry.setOffset(11);
@@ -786,7 +782,7 @@ public class MQClientAPIImplTest {
         response.setBody(responseBody.encode());
 
         List<AckResult> resultList =
-            mqClientAPI.processBatchChangeInvisibleTimeResponse(brokerAddr, requestBody, response);
+            mqClientAPI.processBatchChangeInvisibleTimeResponse(brokerAddr, topic, requestBody, response);
 
         assertThat(resultList).hasSize(1);
         assertThat(resultList.get(0).getStatus()).isEqualTo(AckStatus.NO_EXIST);
@@ -812,7 +808,7 @@ public class MQClientAPIImplTest {
         response.setBody(responseBody.encode());
 
         List<AckResult> resultList =
-            mqClientAPI.processBatchChangeInvisibleTimeResponse(brokerAddr, requestBody, response);
+            mqClientAPI.processBatchChangeInvisibleTimeResponse(brokerAddr, topic, requestBody, response);
 
         assertThat(resultList).hasSize(1);
         assertThat(resultList.get(0).getStatus()).isEqualTo(AckStatus.NO_EXIST);
@@ -822,8 +818,6 @@ public class MQClientAPIImplTest {
     public void testBatchChangeInvisibleTimeAsyncSendsRequestHeader() throws Exception {
         BatchChangeInvisibleTimeRequestBody requestBody = new BatchChangeInvisibleTimeRequestBody();
         ChangeInvisibleTimeRequestEntry requestEntry = new ChangeInvisibleTimeRequestEntry();
-        requestEntry.setConsumerGroup(group);
-        requestEntry.setTopic(topic);
         requestEntry.setQueueId(1);
         requestEntry.setExtraInfo("10 100 1000 0 0 broker-a 1 11");
         requestEntry.setOffset(11);

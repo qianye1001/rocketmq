@@ -27,10 +27,10 @@ import org.apache.rocketmq.client.consumer.AckResult;
 import org.apache.rocketmq.client.consumer.AckStatus;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.message.MessageConst;
+import org.apache.rocketmq.proxy.common.BatchRenewEvent;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ReceiptHandleGroup;
 import org.apache.rocketmq.proxy.common.ReceiptHandleGroupKey;
-import org.apache.rocketmq.proxy.common.RenewEvent;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.receipt.DefaultReceiptHandleManager;
@@ -52,7 +52,7 @@ import static org.mockito.Mockito.doAnswer;
 public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
     private final List<List<ReceiptHandleMessage>> requests = new ArrayList<>();
     private final List<CompletableFuture<List<AckResult>>> responses = new ArrayList<>();
-    private final List<RenewEvent> events = new ArrayList<>();
+    private final List<BatchRenewEvent> events = new ArrayList<>();
     private TestReceiptHandleManager manager;
     private ExecutorService executor;
     private ReceiptHandleProcessor receiptProcessor;
@@ -251,10 +251,10 @@ public class ReceiptHandleBatchCompletionTest extends BaseProcessorTest {
         private final ReceiptHandleGroupKey key = new ReceiptHandleGroupKey(new LocalChannel(), "group");
 
         TestReceiptHandleManager() {
-            super(ReceiptHandleBatchCompletionTest.this.metadataService, ReceiptHandleBatchCompletionTest.this.consumerManager,
+            super(ReceiptHandleBatchCompletionTest.this.metadataService, ReceiptHandleBatchCompletionTest.this.consumerManager, event -> { },
                 event -> {
                     events.add(event);
-                    receiptProcessor.changeInvisibleTime(ReceiptHandleBatchCompletionTest.createContext(), event);
+                    receiptProcessor.batchChangeInvisibleTime(ReceiptHandleBatchCompletionTest.createContext(), event);
                 });
         }
 

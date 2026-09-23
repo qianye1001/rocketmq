@@ -23,10 +23,40 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
+import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 
 public class BatchChangeInvisibleTimeUtils {
+    private static final Logger LOG = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
+
+    public static <T> void sendBatches(List<T> messages, int maxNum,
+        Function<List<T>, CompletableFuture<?>> sender) {
+        int limit = Math.max(1, maxNum);
+        CompletableFuture<Void> previous = CompletableFuture.completedFuture(null);
+        for (int from = 0; from < messages.size(); from += limit) {
+            List<T> batch = messages.subList(from, Math.min(messages.size(), from + limit));
+            previous = previous.thenCompose(ignored -> {
+                try {
+                    return sender.apply(batch).thenApply(result -> (Void) null);
+                } catch (Throwable t) {
+                    CompletableFuture<Void> failed = new CompletableFuture<>();
+                    failed.completeExceptionally(t);
+                    return failed;
+                }
+            }).handle((result, throwable) -> {
+                if (throwable != null) {
+                    LOG.warn("change invisible time batch failed, size={}", batch.size(), throwable);
+                }
+                return null;
+            });
+        }
+    }
+
     public static List<String> batchKey(ReceiptHandle handle, String group, String topic) {
         return Arrays.asList(group, topic, handle.getBrokerName(), handle.getRealTopic(topic, group));
     }

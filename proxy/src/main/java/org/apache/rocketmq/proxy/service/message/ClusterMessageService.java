@@ -57,8 +57,16 @@ import org.apache.rocketmq.remoting.protocol.header.UpdateConsumerOffsetRequestH
 public class ClusterMessageService implements MessageService {
     protected final TopicRouteService topicRouteService;
     protected final MQClientAPIFactory mqClientAPIFactory;
+    private final boolean batchChangeInvisibleTimeEnabled;
 
     public ClusterMessageService(TopicRouteService topicRouteService, MQClientAPIFactory mqClientAPIFactory) {
+        this(topicRouteService, mqClientAPIFactory, false);
+    }
+
+    // Existing subclasses may customize single-message mapping, tracing or metrics. Batch transport is opt-in.
+    public ClusterMessageService(TopicRouteService topicRouteService, MQClientAPIFactory mqClientAPIFactory,
+        boolean batchChangeInvisibleTimeEnabled) {
+        this.batchChangeInvisibleTimeEnabled = batchChangeInvisibleTimeEnabled;
         this.topicRouteService = topicRouteService;
         this.mqClientAPIFactory = mqClientAPIFactory;
     }
@@ -175,13 +183,15 @@ public class ClusterMessageService implements MessageService {
     public CompletableFuture<List<AckResult>> batchChangeInvisibleTime(ProxyContext ctx,
         List<ReceiptHandleMessage> handleList, String consumerGroup, String topic, long invisibleTime,
         long timeoutMillis, boolean suspend) {
+        if (!batchChangeInvisibleTimeEnabled) {
+            return MessageService.super.batchChangeInvisibleTime(ctx, handleList, consumerGroup, topic,
+                invisibleTime, timeoutMillis, suspend);
+        }
         BatchChangeInvisibleTimeRequestBody requestBody = new BatchChangeInvisibleTimeRequestBody();
         String realTopic = handleList.get(0).getReceiptHandle().getRealTopic(topic, consumerGroup);
         requestBody.setEntries(handleList.stream().map(message -> {
             ReceiptHandle handle = message.getReceiptHandle();
             ChangeInvisibleTimeRequestEntry entry = new ChangeInvisibleTimeRequestEntry();
-            entry.setConsumerGroup(consumerGroup);
-            entry.setTopic(handle.getRealTopic(topic, consumerGroup));
             entry.setQueueId(handle.getQueueId());
             entry.setExtraInfo(handle.getReceiptHandle());
             entry.setOffset(handle.getOffset());

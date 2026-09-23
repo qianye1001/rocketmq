@@ -44,6 +44,8 @@ import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageDecoder;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
@@ -82,8 +84,6 @@ import org.apache.rocketmq.remoting.protocol.header.RecallMessageResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.SendMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.SendMessageResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.UpdateConsumerOffsetRequestHeader;
-import org.apache.rocketmq.logging.org.slf4j.Logger;
-import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 
 public class LocalMessageService implements MessageService {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
@@ -452,8 +452,6 @@ public class LocalMessageService implements MessageService {
         for (ReceiptHandleMessage receiptHandleMessage : handleList) {
             ReceiptHandle handle = receiptHandleMessage.getReceiptHandle();
             ChangeInvisibleTimeRequestEntry entry = new ChangeInvisibleTimeRequestEntry();
-            entry.setConsumerGroup(consumerGroup);
-            entry.setTopic(handle.getRealTopic(topic, consumerGroup));
             entry.setQueueId(handle.getQueueId());
             entry.setExtraInfo(handle.getReceiptHandle());
             entry.setOffset(handle.getOffset());

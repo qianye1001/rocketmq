@@ -19,14 +19,13 @@ package org.apache.rocketmq.proxy.processor;
 
 import io.netty.channel.Channel;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.state.StateEventListener;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
-import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
+import org.apache.rocketmq.proxy.common.BatchRenewEvent;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.RenewEvent;
@@ -36,7 +35,6 @@ import org.apache.rocketmq.proxy.service.receipt.DefaultReceiptHandleManager;
 
 public class ReceiptHandleProcessor extends AbstractProcessor {
     protected final static Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
-
     protected DefaultReceiptHandleManager receiptHandleManager;
 
     public ReceiptHandleProcessor(MessagingProcessor messagingProcessor, ServiceManager serviceManager) {
@@ -44,44 +42,44 @@ public class ReceiptHandleProcessor extends AbstractProcessor {
         StateEventListener<RenewEvent> eventListener = event -> {
             ProxyContext context = createContext(event.getEventType().name())
                 .setChannel(event.getKey().getChannel());
-            changeInvisibleTime(context, event);
+            MessageReceiptHandle messageReceiptHandle = event.getMessageReceiptHandle();
+            ReceiptHandle handle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
+            messagingProcessor
+                .changeInvisibleTime(context, handle, messageReceiptHandle.getMessageId(),
+                    messageReceiptHandle.getGroup(), messageReceiptHandle.getTopic(),
+                    event.getRenewTime(), messageReceiptHandle.getLiteTopic())
+                .whenComplete((v, t) -> {
+                    if (t != null) {
+                        event.getFuture().completeExceptionally(t);
+                        return;
+                    }
+                    event.getFuture().complete(v);
+                });
         };
-        this.receiptHandleManager = new DefaultReceiptHandleManager(serviceManager.getMetadataService(), serviceManager.getConsumerManager(), eventListener);
+        this.receiptHandleManager = new DefaultReceiptHandleManager(serviceManager.getMetadataService(), serviceManager.getConsumerManager(), eventListener,
+            event -> batchChangeInvisibleTime(createContext(event.getEventType().name())
+                .setChannel(event.getKey().getChannel()), event));
         this.appendStartAndShutdown(receiptHandleManager);
     }
 
-    protected void changeInvisibleTime(ProxyContext context, RenewEvent event) {
+    protected void batchChangeInvisibleTime(ProxyContext context, BatchRenewEvent event) {
         try {
-            List<MessageReceiptHandle> messages = event.getMessageReceiptHandleList();
-            MessageReceiptHandle first = messages.get(0);
-            List<ReceiptHandleMessage> handles = new ArrayList<>(messages.size());
-            for (int i = 0; i < messages.size(); i++) {
-                MessageReceiptHandle message = messages.get(i);
+            List<ReceiptHandleMessage> handles = new ArrayList<>(event.getEntries().size());
+            for (BatchRenewEvent.Entry entry : event.getEntries()) {
+                MessageReceiptHandle message = entry.getMessageReceiptHandle();
                 handles.add(new ReceiptHandleMessage(ReceiptHandle.decode(message.getReceiptHandleStr()),
-                    message.getMessageId(), message.getLiteTopic(), event.getRenewTimeList().get(i)));
+                    message.getMessageId(), message.getLiteTopic(), entry.getRenewTime()));
             }
-            if (handles.size() == 1) {
-                ReceiptHandleMessage handle = handles.get(0);
-                messagingProcessor.changeInvisibleTime(context, handle.getReceiptHandle(), handle.getMessageId(),
-                    first.getGroup(), first.getTopic(), handle.getInvisibleTime(), handle.getLiteTopic())
-                    .whenComplete((result, throwable) -> {
-                        if (throwable != null) {
-                            event.getFuture().completeExceptionally(throwable);
-                        } else {
-                            event.getFuture().complete(Collections.singletonList(new BatchChangeInvisibleTimeResult(handle, result)));
-                        }
-                    });
-            } else {
-                messagingProcessor.batchChangeInvisibleTime(context, handles, first.getGroup(), first.getTopic(),
-                    handles.get(0).getInvisibleTime(), MessagingProcessor.DEFAULT_TIMEOUT_MILLS, false)
-                    .whenComplete((results, throwable) -> {
-                        if (throwable != null) {
-                            event.getFuture().completeExceptionally(throwable);
-                        } else {
-                            event.getFuture().complete(results);
-                        }
-                    });
-            }
+            MessageReceiptHandle first = event.getEntries().get(0).getMessageReceiptHandle();
+            messagingProcessor.batchChangeInvisibleTime(context, handles, first.getGroup(), first.getTopic(),
+                handles.get(0).getInvisibleTime(), MessagingProcessor.DEFAULT_TIMEOUT_MILLS, false)
+                .whenComplete((results, throwable) -> {
+                    if (throwable != null) {
+                        event.getFuture().completeExceptionally(throwable);
+                    } else {
+                        event.getFuture().complete(results);
+                    }
+                });
         } catch (Throwable t) {
             event.getFuture().completeExceptionally(t);
         }

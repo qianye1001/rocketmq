@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.lang3.StringUtils;
@@ -31,6 +30,7 @@ import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.offset.ConsumerOffsetManager;
 import org.apache.rocketmq.broker.offset.MemoryConsumerOrderInfoManager;
 import org.apache.rocketmq.broker.pop.PopConsumerLockService;
+import org.apache.rocketmq.broker.pop.PopConsumerRecord;
 import org.apache.rocketmq.broker.pop.orderly.ConsumerOrderInfoManager;
 import org.apache.rocketmq.common.PopAckConstants;
 import org.apache.rocketmq.common.TopicConfig;
@@ -234,32 +234,30 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         }
         List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-        if (!normalizeAndValidateBatchRequestEntries(batchRequestHeader, requestEntries)) {
+        if (StringUtils.isBlank(batchRequestHeader.getConsumerGroup()) || StringUtils.isBlank(batchRequestHeader.getTopic())) {
             response.setCode(ResponseCode.MESSAGE_ILLEGAL);
-            response.setRemark("batch change invisible time entries must use the same topic and consumerGroup as request header");
+            response.setRemark("batch change invisible time requires topic and consumerGroup");
             return CompletableFuture.completedFuture(response);
         }
-
         if (brokerController.getBrokerConfig().isPopConsumerKVServiceEnable()) {
-            List<ChangeInvisibleTimeRequestEntry> kvChangeRecords = new ArrayList<>();
+            TopicConfig topicConfig = brokerController.getTopicConfigManager().selectTopicConfig(batchRequestHeader.getTopic());
+            List<PopConsumerRecord> kvOldRecords = new ArrayList<>();
+            List<PopConsumerRecord> kvNewRecords = new ArrayList<>();
             List<Integer> kvIndexes = new ArrayList<>();
-            List<ChangeInvisibleTimeResponseEntry> kvSuccessEntries = new ArrayList<>();
             for (int i = 0; i < requestEntries.size(); i++) {
                 ChangeInvisibleTimeRequestEntry requestEntry = requestEntries.get(i);
-                if (tryAppendBatchKvChange(channel, requestEntry, i, responseEntries, kvChangeRecords,
-                    kvIndexes, kvSuccessEntries)) {
+                if (tryAppendBatchKvChange(channel, batchRequestHeader, topicConfig, requestEntry, i, responseEntries,
+                    kvOldRecords, kvNewRecords, kvIndexes)) {
                     continue;
                 }
-                appendSingleBatchEntry(channel, requestEntry, request.getOpaque(), brokerAllowSuspend,
+                appendSingleBatchEntry(channel, batchRequestHeader, requestEntry, request.getOpaque(), brokerAllowSuspend,
                     responseEntries, futures, i);
             }
 
-            if (!kvChangeRecords.isEmpty()) {
+            if (!kvOldRecords.isEmpty()) {
                 try {
-                    brokerController.getPopConsumerService().batchChangeInvisibilityDuration(kvChangeRecords);
-                    for (int i = 0; i < kvIndexes.size(); i++) {
-                        responseEntries[kvIndexes.get(i)] = kvSuccessEntries.get(i);
-                    }
+                    brokerController.getPopConsumerService().batchChangeInvisibilityDuration(
+                        batchRequestHeader.getConsumerGroup(), kvNewRecords, kvOldRecords);
                 } catch (Throwable t) {
                     POP_LOGGER.error("batch change invisibility duration failed", t);
                     for (Integer index : kvIndexes) {
@@ -269,7 +267,7 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
             }
         } else {
             for (int i = 0; i < requestEntries.size(); i++) {
-                appendSingleBatchEntry(channel, requestEntries.get(i), request.getOpaque(), brokerAllowSuspend,
+                appendSingleBatchEntry(channel, batchRequestHeader, requestEntries.get(i), request.getOpaque(), brokerAllowSuspend,
                     responseEntries, futures, i);
             }
         }
@@ -282,35 +280,10 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         });
     }
 
-    protected boolean normalizeAndValidateBatchRequestEntries(BatchChangeInvisibleTimeRequestHeader batchRequestHeader,
-        List<ChangeInvisibleTimeRequestEntry> requestEntries) {
-        if (batchRequestHeader == null ||
-            StringUtils.isBlank(batchRequestHeader.getConsumerGroup()) ||
-            StringUtils.isBlank(batchRequestHeader.getTopic())) {
-            return false;
-        }
-
-        for (ChangeInvisibleTimeRequestEntry requestEntry : requestEntries) {
-            if (requestEntry == null) {
-                continue;
-            }
-            if (StringUtils.isBlank(requestEntry.getConsumerGroup())) {
-                requestEntry.setConsumerGroup(batchRequestHeader.getConsumerGroup());
-            }
-            if (StringUtils.isBlank(requestEntry.getTopic())) {
-                requestEntry.setTopic(batchRequestHeader.getTopic());
-            }
-            if (!Objects.equals(batchRequestHeader.getConsumerGroup(), requestEntry.getConsumerGroup()) ||
-                !Objects.equals(batchRequestHeader.getTopic(), requestEntry.getTopic())) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    protected boolean tryAppendBatchKvChange(final Channel channel, ChangeInvisibleTimeRequestEntry requestEntry, int index,
-        ChangeInvisibleTimeResponseEntry[] responseEntries, List<ChangeInvisibleTimeRequestEntry> kvChangeRecords,
-        List<Integer> kvIndexes, List<ChangeInvisibleTimeResponseEntry> kvSuccessEntries) {
+    protected boolean tryAppendBatchKvChange(final Channel channel, BatchChangeInvisibleTimeRequestHeader header,
+        TopicConfig topicConfig, ChangeInvisibleTimeRequestEntry requestEntry, int index,
+        ChangeInvisibleTimeResponseEntry[] responseEntries, List<PopConsumerRecord> oldRecords,
+        List<PopConsumerRecord> newRecords, List<Integer> kvIndexes) {
         if (requestEntry == null) {
             responseEntries[index] = buildFailedResponseEntry(ResponseCode.SYSTEM_ERROR);
             return true;
@@ -325,25 +298,25 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
                 return false;
             }
 
-            ChangeInvisibleTimeResponseEntry failedEntry = validateBatchKvEntry(channel, requestEntry);
+            ChangeInvisibleTimeResponseEntry failedEntry = validateBatchKvEntry(channel, header.getTopic(), topicConfig, requestEntry);
             if (failedEntry != null) {
                 responseEntries[index] = failedEntry;
                 return true;
             }
 
             long current = System.currentTimeMillis();
-            requestEntry.setPopTime(ExtraInfoUtil.getPopTime(extraInfo));
-            requestEntry.setOldInvisibleTime(ExtraInfoUtil.getInvisibleTime(extraInfo));
-            requestEntry.setChangedPopTime(current);
-            requestEntry.setChangedInvisibleTime(requestEntry.getInvisibleTime());
-            kvChangeRecords.add(requestEntry);
+            oldRecords.add(new PopConsumerRecord(ExtraInfoUtil.getPopTime(extraInfo), header.getConsumerGroup(),
+                header.getTopic(), requestEntry.getQueueId(), 0, ExtraInfoUtil.getInvisibleTime(extraInfo),
+                requestEntry.getOffset(), null, requestEntry.isSuspend()));
+            newRecords.add(new PopConsumerRecord(current, header.getConsumerGroup(), header.getTopic(),
+                requestEntry.getQueueId(), 0, requestEntry.getInvisibleTime(), requestEntry.getOffset(), null, requestEntry.isSuspend()));
             ChangeInvisibleTimeResponseEntry successEntry = new ChangeInvisibleTimeResponseEntry();
             successEntry.setCode(ResponseCode.SUCCESS);
             successEntry.setPopTime(current);
             successEntry.setInvisibleTime(requestEntry.getInvisibleTime());
             successEntry.setReviveQid(ExtraInfoUtil.getReviveQid(extraInfo));
             kvIndexes.add(index);
-            kvSuccessEntries.add(successEntry);
+            responseEntries[index] = successEntry;
             return true;
         } catch (Throwable t) {
             responseEntries[index] = buildFailedResponseEntry(ResponseCode.SYSTEM_ERROR);
@@ -351,11 +324,12 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         }
     }
 
-    protected void appendSingleBatchEntry(final Channel channel, ChangeInvisibleTimeRequestEntry requestEntry, int opaque,
+    protected void appendSingleBatchEntry(final Channel channel, BatchChangeInvisibleTimeRequestHeader header,
+        ChangeInvisibleTimeRequestEntry requestEntry, int opaque,
         boolean brokerAllowSuspend, ChangeInvisibleTimeResponseEntry[] responseEntries,
         List<CompletableFuture<Void>> futures, int index) {
         try {
-            ChangeInvisibleTimeRequestHeader requestHeader = buildRequestHeader(requestEntry);
+            ChangeInvisibleTimeRequestHeader requestHeader = buildRequestHeader(header, requestEntry);
             futures.add(processSingleBatchEntry(channel, requestHeader, opaque, brokerAllowSuspend)
                 .thenAccept(entry -> responseEntries[index] = entry));
         } catch (Throwable t) {
@@ -382,11 +356,10 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         return failedEntry;
     }
 
-    protected ChangeInvisibleTimeResponseEntry validateBatchKvEntry(final Channel channel,
-        ChangeInvisibleTimeRequestEntry requestEntry) throws RemotingCommandException {
-        TopicConfig topicConfig = this.brokerController.getTopicConfigManager().selectTopicConfig(requestEntry.getTopic());
+    protected ChangeInvisibleTimeResponseEntry validateBatchKvEntry(final Channel channel, String topic,
+        TopicConfig topicConfig, ChangeInvisibleTimeRequestEntry requestEntry) throws RemotingCommandException {
         if (null == topicConfig) {
-            POP_LOGGER.error("The topic {} not exist, consumer: {} ", requestEntry.getTopic(), RemotingHelper.parseChannelRemoteAddr(channel));
+            POP_LOGGER.error("The topic {} not exist, consumer: {} ", topic, RemotingHelper.parseChannelRemoteAddr(channel));
             ChangeInvisibleTimeResponseEntry responseEntry = new ChangeInvisibleTimeResponseEntry();
             responseEntry.setCode(ResponseCode.TOPIC_NOT_EXIST);
             return responseEntry;
@@ -394,17 +367,17 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
 
         if (requestEntry.getQueueId() >= topicConfig.getReadQueueNums() || requestEntry.getQueueId() < 0) {
             String errorInfo = String.format("queueId[%d] is illegal, topic:[%s] topicConfig.readQueueNums:[%d] consumer:[%s]",
-                requestEntry.getQueueId(), requestEntry.getTopic(), topicConfig.getReadQueueNums(), channel.remoteAddress());
+                requestEntry.getQueueId(), topic, topicConfig.getReadQueueNums(), channel.remoteAddress());
             POP_LOGGER.warn(errorInfo);
             ChangeInvisibleTimeResponseEntry responseEntry = new ChangeInvisibleTimeResponseEntry();
             responseEntry.setCode(ResponseCode.MESSAGE_ILLEGAL);
             return responseEntry;
         }
 
-        long minOffset = this.brokerController.getMessageStore().getMinOffsetInQueue(requestEntry.getTopic(), requestEntry.getQueueId());
+        long minOffset = this.brokerController.getMessageStore().getMinOffsetInQueue(topic, requestEntry.getQueueId());
         long maxOffset;
         try {
-            maxOffset = this.brokerController.getMessageStore().getMaxOffsetInQueue(requestEntry.getTopic(), requestEntry.getQueueId());
+            maxOffset = this.brokerController.getMessageStore().getMaxOffsetInQueue(topic, requestEntry.getQueueId());
         } catch (ConsumeQueueException e) {
             throw new RemotingCommandException("Failed to get max consume offset", e);
         }
@@ -416,10 +389,11 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         return null;
     }
 
-    protected ChangeInvisibleTimeRequestHeader buildRequestHeader(ChangeInvisibleTimeRequestEntry entry) {
+    protected ChangeInvisibleTimeRequestHeader buildRequestHeader(BatchChangeInvisibleTimeRequestHeader header,
+        ChangeInvisibleTimeRequestEntry entry) {
         ChangeInvisibleTimeRequestHeader requestHeader = new ChangeInvisibleTimeRequestHeader();
-        requestHeader.setConsumerGroup(entry.getConsumerGroup());
-        requestHeader.setTopic(entry.getTopic());
+        requestHeader.setConsumerGroup(header.getConsumerGroup());
+        requestHeader.setTopic(header.getTopic());
         requestHeader.setQueueId(entry.getQueueId());
         requestHeader.setExtraInfo(entry.getExtraInfo());
         requestHeader.setOffset(entry.getOffset());

@@ -53,7 +53,6 @@ import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.common.utils.BatchChangeInvisibleTimeUtils;
 import org.apache.rocketmq.proxy.common.utils.ProxyUtils;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
-import org.apache.rocketmq.proxy.config.ProxyConfig;
 import org.apache.rocketmq.proxy.service.ServiceManager;
 import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.route.AddressableMessageQueue;
@@ -252,28 +251,17 @@ public class ConsumerProcessor extends AbstractProcessor {
             }
             for (List<ReceiptHandleMessage> batch : BatchChangeInvisibleTimeUtils.groupByBroker(
                 toReturnMessageList, consumerGroup, topic)) {
-                if (batch.size() == 1) {
-                    ReceiptHandleMessage handleMessage = batch.get(0);
-                    this.messagingProcessor.changeInvisibleTime(
-                        ctx,
-                        handleMessage.getReceiptHandle(),
-                        handleMessage.getMessageId(),
-                        consumerGroup,
-                        topic,
-                        MessagingProcessor.INVISIBLE_TIME_MS,
-                        handleMessage.getLiteTopic(),
-                        MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-                        true);
-                } else {
-                    this.messagingProcessor.batchChangeInvisibleTime(
-                        ctx,
-                        batch,
-                        consumerGroup,
-                        topic,
-                        MessagingProcessor.INVISIBLE_TIME_MS,
-                        MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-                        true);
-                }
+                BatchChangeInvisibleTimeUtils.sendBatches(batch,
+                    ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum(), handles -> {
+                        if (handles.size() == 1) {
+                            ReceiptHandleMessage handle = handles.get(0);
+                            return messagingProcessor.changeInvisibleTime(ctx, handle.getReceiptHandle(), handle.getMessageId(),
+                                consumerGroup, topic, MessagingProcessor.INVISIBLE_TIME_MS, handle.getLiteTopic(),
+                                MessagingProcessor.DEFAULT_TIMEOUT_MILLS, true);
+                        }
+                        return messagingProcessor.batchChangeInvisibleTime(ctx, handles, consumerGroup, topic,
+                            MessagingProcessor.INVISIBLE_TIME_MS, MessagingProcessor.DEFAULT_TIMEOUT_MILLS, true);
+                    });
             }
             popResult.setMsgFoundList(messageExtList);
         }
@@ -399,6 +387,9 @@ public class ConsumerProcessor extends AbstractProcessor {
         CompletableFuture<List<BatchChangeInvisibleTimeResult>> future = new CompletableFuture<>();
         try {
             BatchChangeInvisibleTimeUtils.validateBatch(handleMessageList, consumerGroup, topic);
+            if (handleMessageList.size() > Math.max(1, ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum())) {
+                throw new IllegalArgumentException("batch change invisible time exceeds the batch size limit");
+            }
             BatchChangeInvisibleTimeResult[] batchResults = new BatchChangeInvisibleTimeResult[handleMessageList.size()];
             List<ReceiptHandleMessage> validHandles = new ArrayList<>();
             for (int i = 0; i < handleMessageList.size(); i++) {
@@ -412,7 +403,7 @@ public class ConsumerProcessor extends AbstractProcessor {
             if (validHandles.isEmpty()) {
                 future.complete(buildBatchChangeInvisibleTimeResultList(handleMessageList, batchResults));
             } else {
-                processBrokerChangeInvisibleTime(ctx, consumerGroup, topic, validHandles, invisibleTime, timeoutMillis, suspend)
+                executeBrokerBatchChangeInvisibleTime(ctx, consumerGroup, topic, validHandles, invisibleTime, timeoutMillis, suspend)
                     .whenComplete((results, throwable) -> {
                         if (throwable != null) {
                             future.completeExceptionally(throwable);
@@ -449,31 +440,6 @@ public class ConsumerProcessor extends AbstractProcessor {
             resultList.add(result);
         }
         return resultList;
-    }
-
-    protected CompletableFuture<List<BatchChangeInvisibleTimeResult>> processBrokerChangeInvisibleTime(
-        ProxyContext ctx, String consumerGroup, String topic, List<ReceiptHandleMessage> handleMessageList,
-        long invisibleTime, long timeoutMillis, boolean suspend) {
-        ProxyConfig proxyConfig = ConfigurationManager.getProxyConfig();
-        int batchMaxNum = Math.max(1, proxyConfig.getBatchChangeInvisibleTimeMaxNum());
-        if (handleMessageList.size() <= batchMaxNum) {
-            return executeBrokerBatchChangeInvisibleTime(ctx, consumerGroup, topic, handleMessageList,
-                invisibleTime, timeoutMillis, suspend);
-        }
-        CompletableFuture<List<BatchChangeInvisibleTimeResult>> resultFuture =
-            CompletableFuture.completedFuture(new ArrayList<>(handleMessageList.size()));
-        for (int fromIndex = 0; fromIndex < handleMessageList.size(); fromIndex += batchMaxNum) {
-            int toIndex = Math.min(handleMessageList.size(), fromIndex + batchMaxNum);
-            List<ReceiptHandleMessage> batchHandleList = handleMessageList.subList(fromIndex, toIndex);
-            // Keep oversized chunks sequential to avoid sending many write-heavy batches to the same broker at once.
-            resultFuture = resultFuture.thenCompose(results ->
-                executeBrokerBatchChangeInvisibleTime(ctx, consumerGroup, topic, batchHandleList,
-                    invisibleTime, timeoutMillis, suspend).thenApply(batchResults -> {
-                        results.addAll(batchResults);
-                        return results;
-                    }));
-        }
-        return resultFuture;
     }
 
     private CompletableFuture<List<BatchChangeInvisibleTimeResult>> executeBrokerBatchChangeInvisibleTime(

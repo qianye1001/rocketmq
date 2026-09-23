@@ -146,38 +146,18 @@ public class ReceiveMessageResponseStreamWriter {
         }
         for (List<ReceiptHandleMessage> batch : BatchChangeInvisibleTimeUtils.groupByBroker(handleMessageList,
             request.getGroup().getName(), request.getMessageQueue().getTopic().getName())) {
-            if (batch.size() == 1) {
-                ReceiptHandleMessage handleMessage = batch.get(0);
-                this.messagingProcessor.changeInvisibleTime(
-                    ctx,
-                    handleMessage.getReceiptHandle(),
-                    handleMessage.getMessageId(),
-                    request.getGroup().getName(),
-                    request.getMessageQueue().getTopic().getName(),
-                    NACK_INVISIBLE_TIME,
-                    handleMessage.getLiteTopic(),
-                    MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-                    true
-                ).exceptionally(t -> {
-                    log.error("change invisible time failed when nack message after write failed. group={}, topic={}, messageId={}",
-                        request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), handleMessage.getMessageId(), t);
-                    return null;
+            BatchChangeInvisibleTimeUtils.sendBatches(batch,
+                ConfigurationManager.getProxyConfig().getBatchChangeInvisibleTimeMaxNum(), handles -> {
+                    if (handles.size() == 1) {
+                        ReceiptHandleMessage handle = handles.get(0);
+                        return messagingProcessor.changeInvisibleTime(ctx, handle.getReceiptHandle(), handle.getMessageId(),
+                            request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), NACK_INVISIBLE_TIME,
+                            handle.getLiteTopic(), MessagingProcessor.DEFAULT_TIMEOUT_MILLS, true);
+                    }
+                    return messagingProcessor.batchChangeInvisibleTime(ctx, handles, request.getGroup().getName(),
+                        request.getMessageQueue().getTopic().getName(), NACK_INVISIBLE_TIME,
+                        MessagingProcessor.DEFAULT_TIMEOUT_MILLS, true);
                 });
-                continue;
-            }
-            this.messagingProcessor.batchChangeInvisibleTime(
-                ctx,
-                batch,
-                request.getGroup().getName(),
-                request.getMessageQueue().getTopic().getName(),
-                NACK_INVISIBLE_TIME,
-                MessagingProcessor.DEFAULT_TIMEOUT_MILLS,
-                true
-            ).exceptionally(t -> {
-                log.error("batch change invisible time failed when nack messages after write failed. group={}, topic={}, size={}",
-                    request.getGroup().getName(), request.getMessageQueue().getTopic().getName(), batch.size(), t);
-                return null;
-            });
         }
     }
 

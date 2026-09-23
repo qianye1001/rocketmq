@@ -222,9 +222,9 @@ public interface MessagingProcessor extends StartAndShutdown {
     );
 
     /**
-     * Change invisible time for one broker and real topic. Results preserve input order.
+     * Change invisible time for one bounded batch on one broker and real topic. Results preserve input order.
      *
-     * @param handleMessageList non-empty handles from the same broker and real topic
+     * @param handleMessageList non-empty handles from the same broker and real topic, already split to the configured limit
      * @param suspend whether the new checkpoint should be marked suspended
      */
     default CompletableFuture<List<BatchChangeInvisibleTimeResult>> batchChangeInvisibleTime(
@@ -239,9 +239,9 @@ public interface MessagingProcessor extends StartAndShutdown {
     }
 
     /**
-     * Change invisible time for one broker and real topic. Results preserve input order.
+     * Change invisible time for one bounded batch on one broker and real topic. Results preserve input order.
      *
-     * @param handleMessageList non-empty handles from the same broker and real topic
+     * @param handleMessageList non-empty handles from the same broker and real topic, already split to the configured limit
      * @param suspend whether the new checkpoint should be marked suspended
      */
     CompletableFuture<List<BatchChangeInvisibleTimeResult>> batchChangeInvisibleTime(

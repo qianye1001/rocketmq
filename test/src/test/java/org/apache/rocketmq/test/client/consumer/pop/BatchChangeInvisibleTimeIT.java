@@ -27,10 +27,12 @@ import org.apache.rocketmq.client.consumer.AckResult;
 import org.apache.rocketmq.client.consumer.AckStatus;
 import org.apache.rocketmq.client.consumer.PopResult;
 import org.apache.rocketmq.client.consumer.PopStatus;
+import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.common.attribute.CQType;
 import org.apache.rocketmq.common.attribute.TopicMessageType;
 import org.apache.rocketmq.common.constant.ConsumeInitMode;
 import org.apache.rocketmq.common.filter.ExpressionType;
+import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageQueue;
@@ -65,10 +67,10 @@ public class BatchChangeInvisibleTimeIT extends BasePop {
         brokerAddr = brokerController1.getBrokerAddr();
         topic = MQRandomUtils.getRandomTopic();
         group = initConsumerGroup();
-        IntegrationTestBase.initTopic(topic, NAMESRV_ADDR, BROKER1_NAME, 8, CQType.SimpleCQ, TopicMessageType.NORMAL);
+        assertTrue(IntegrationTestBase.initTopic(topic, NAMESRV_ADDR, BROKER1_NAME, 8, CQType.SimpleCQ, TopicMessageType.NORMAL));
         producer = getProducer(NAMESRV_ADDR, topic);
         client = getRMQPopClient();
-        messageQueue = new MessageQueue(topic, BROKER1_NAME, -1);
+        messageQueue = new MessageQueue(topic, BROKER1_NAME, 0);
     }
 
     @After
@@ -123,7 +125,12 @@ public class BatchChangeInvisibleTimeIT extends BasePop {
     }
 
     public void testBatchChangeInvisibleTime(Supplier<PopResult> popResultSupplier) throws Throwable {
-        producer.send(10);
+        for (int i = 0; i < 10; i++) {
+            assertEquals(SendStatus.SEND_OK, producer.getProducer().send(new Message(topic, new byte[]{(byte) i}), messageQueue).getSendStatus());
+        }
+        // POP must start after dispatch, especially for an orderly queue that locks its first returned batch.
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+            assertEquals(10L, brokerController1.getMessageStore().getMaxOffsetInQueue(topic, messageQueue.getQueueId())));
         List<String> extraInfoList = new ArrayList<>();
         await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
             PopResult popResult = popResultSupplier.get();

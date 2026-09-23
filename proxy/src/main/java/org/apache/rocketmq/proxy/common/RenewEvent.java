@@ -17,17 +17,15 @@
 
 package org.apache.rocketmq.proxy.common;
 
-import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import org.apache.rocketmq.client.consumer.AckResult;
 
-/** A single broker's renewal batch. Results correspond to handles in input order. */
 public class RenewEvent {
-    private final ReceiptHandleGroupKey key;
-    private final List<MessageReceiptHandle> messageReceiptHandleList;
-    private final List<Long> renewTimeList;
-    private final EventType eventType;
-    private final CompletableFuture<List<BatchChangeInvisibleTimeResult>> future = new CompletableFuture<>();
+    protected ReceiptHandleGroupKey key;
+    protected MessageReceiptHandle messageReceiptHandle;
+    protected long renewTime;
+    protected EventType eventType;
+    protected CompletableFuture<AckResult> future;
 
     public enum EventType {
         RENEW,
@@ -36,35 +34,31 @@ public class RenewEvent {
     }
 
     public RenewEvent(ReceiptHandleGroupKey key, MessageReceiptHandle messageReceiptHandle, long renewTime,
-        EventType eventType) {
-        this(key, Collections.singletonList(messageReceiptHandle), Collections.singletonList(renewTime), eventType);
-    }
-
-    public RenewEvent(ReceiptHandleGroupKey key, List<MessageReceiptHandle> messageReceiptHandleList,
-        List<Long> renewTimeList, EventType eventType) {
+        EventType eventType, CompletableFuture<AckResult> future) {
         this.key = key;
-        this.messageReceiptHandleList = messageReceiptHandleList;
-        this.renewTimeList = renewTimeList;
+        this.messageReceiptHandle = messageReceiptHandle;
+        this.renewTime = renewTime;
         this.eventType = eventType;
+        this.future = future;
     }
 
     public ReceiptHandleGroupKey getKey() {
         return key;
     }
 
-    public List<MessageReceiptHandle> getMessageReceiptHandleList() {
-        return messageReceiptHandleList;
+    public MessageReceiptHandle getMessageReceiptHandle() {
+        return messageReceiptHandle;
     }
 
-    public List<Long> getRenewTimeList() {
-        return renewTimeList;
+    public long getRenewTime() {
+        return renewTime;
     }
 
     public EventType getEventType() {
         return eventType;
     }
 
-    public CompletableFuture<List<BatchChangeInvisibleTimeResult>> getFuture() {
+    public CompletableFuture<AckResult> getFuture() {
         return future;
     }
 }

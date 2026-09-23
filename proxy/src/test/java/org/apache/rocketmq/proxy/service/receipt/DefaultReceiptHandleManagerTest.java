@@ -21,7 +21,6 @@ import io.netty.channel.Channel;
 import io.netty.channel.local.LocalChannel;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,7 +34,6 @@ import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.message.MessageClientIDSetter;
 import org.apache.rocketmq.common.state.StateEventListener;
-import org.apache.rocketmq.proxy.common.BatchChangeInvisibleTimeResult;
 import org.apache.rocketmq.proxy.common.ContextVariable;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
@@ -49,7 +47,6 @@ import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.config.ProxyConfig;
 import org.apache.rocketmq.proxy.processor.MessagingProcessor;
 import org.apache.rocketmq.proxy.service.BaseServiceTest;
-import org.apache.rocketmq.proxy.service.message.ReceiptHandleMessage;
 import org.apache.rocketmq.proxy.service.metadata.MetadataService;
 import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.remoting.protocol.subscription.RetryPolicy;
@@ -93,18 +90,16 @@ public class DefaultReceiptHandleManagerTest extends BaseServiceTest {
         receiptHandleManager = new DefaultReceiptHandleManager(metadataService, consumerManager, new StateEventListener<RenewEvent>() {
             @Override
             public void fireEvent(RenewEvent event) {
-                MessageReceiptHandle messageReceiptHandle = event.getMessageReceiptHandleList().get(0);
+                MessageReceiptHandle messageReceiptHandle = event.getMessageReceiptHandle();
                 ReceiptHandle handle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
                 messagingProcessor.changeInvisibleTime(PROXY_CONTEXT, handle, messageReceiptHandle.getMessageId(),
-                        messageReceiptHandle.getGroup(), messageReceiptHandle.getTopic(), event.getRenewTimeList().get(0))
+                        messageReceiptHandle.getGroup(), messageReceiptHandle.getTopic(), event.getRenewTime())
                     .whenComplete((v, t) -> {
                         if (t != null) {
                             event.getFuture().completeExceptionally(t);
                             return;
                         }
-                        event.getFuture().complete(Collections.singletonList(
-                            new BatchChangeInvisibleTimeResult(
-                                new ReceiptHandleMessage(handle, messageReceiptHandle.getMessageId()), v)));
+                        event.getFuture().complete(v);
                     });
             }
         });
@@ -125,6 +120,45 @@ public class DefaultReceiptHandleManagerTest extends BaseServiceTest {
         Mockito.doNothing().when(consumerManager).appendConsumerIdsChangeListener(Mockito.any(ConsumerIdsChangeListener.class));
         messageReceiptHandle = new MessageReceiptHandle(GROUP, TOPIC, QUEUE_ID, receiptHandle, MESSAGE_ID, OFFSET,
             RECONSUME_TIMES);
+    }
+
+    @Test
+    public void testLegacyConstructorKeepsRenewContextHookWhenBatchEnabled() throws Exception {
+        ConfigurationManager.getProxyConfig().setEnableBatchChangeInvisibleTime(true);
+        DefaultReceiptHandleManager original = receiptHandleManager;
+        AtomicInteger contextHookCalls = new AtomicInteger();
+        receiptHandleManager = new DefaultReceiptHandleManager(metadataService, consumerManager, original.eventListener) {
+            @Override
+            protected void renewMessage(ProxyContext ctx, ReceiptHandleGroupKey key, ReceiptHandleGroup group,
+                String messageId, String handle) {
+                super.renewMessage(ctx.withVal("instance", "tenant"), key, group, messageId, handle);
+            }
+
+            @Override
+            protected CompletableFuture<MessageReceiptHandle> startRenewMessage(ProxyContext ctx,
+                ReceiptHandleGroupKey key, MessageReceiptHandle message) {
+                if ("tenant".equals(ctx.getVal("instance"))) {
+                    contextHookCalls.incrementAndGet();
+                }
+                return super.startRenewMessage(ctx, key, message);
+            }
+        };
+        original.shutdown();
+        try {
+            Channel channel = PROXY_CONTEXT.getChannel();
+            AckResult result = new AckResult();
+            result.setStatus(AckStatus.OK);
+            result.setExtraInfo(receiptHandle);
+            Mockito.when(messagingProcessor.changeInvisibleTime(Mockito.any(), Mockito.any(), Mockito.anyString(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.anyLong())).thenReturn(CompletableFuture.completedFuture(result));
+            Mockito.when(consumerManager.findChannel(GROUP, channel)).thenReturn(Mockito.mock(ClientChannelInfo.class));
+            receiptHandleManager.addReceiptHandle(PROXY_CONTEXT, channel, GROUP, MSG_ID, messageReceiptHandle);
+            receiptHandleManager.scheduleRenewTask();
+            await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertEquals(1, messageReceiptHandle.getRenewTimes()));
+            assertEquals(1, contextHookCalls.get());
+        } finally {
+            receiptHandleManager.shutdown();
+        }
     }
 
     @Test
