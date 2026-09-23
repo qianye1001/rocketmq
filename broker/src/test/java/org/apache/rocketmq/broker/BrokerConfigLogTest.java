@@ -17,10 +17,15 @@
 
 package org.apache.rocketmq.broker;
 
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
 import java.io.File;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Properties;
 import java.util.stream.Collectors;
 import org.apache.rocketmq.auth.config.AuthConfig;
+import org.apache.rocketmq.broker.processor.AdminBrokerProcessor;
 import org.apache.rocketmq.common.BrokerConfig;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.logging.ch.qos.logback.classic.Level;
@@ -30,12 +35,17 @@ import org.apache.rocketmq.logging.ch.qos.logback.core.read.ListAppender;
 import org.apache.rocketmq.remoting.Configuration;
 import org.apache.rocketmq.remoting.netty.NettyClientConfig;
 import org.apache.rocketmq.remoting.netty.NettyServerConfig;
+import org.apache.rocketmq.remoting.protocol.RemotingCommand;
+import org.apache.rocketmq.remoting.protocol.RequestCode;
+import org.apache.rocketmq.remoting.protocol.ResponseCode;
 import org.apache.rocketmq.store.config.MessageStoreConfig;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class BrokerConfigLogTest {
     @Rule
@@ -77,10 +87,22 @@ public class BrokerConfigLogTest {
             update.setProperty("innerClientAuthenticationCredentials", newCredentials);
             update.setProperty("authenticationEnabled", "true");
             update.setProperty("authenticationWhitelist", "11, 12");
-            configuration.update(update);
+            ChannelHandlerContext context = mock(ChannelHandlerContext.class);
+            Channel channel = mock(Channel.class);
+            when(context.channel()).thenReturn(channel);
+            when(channel.remoteAddress()).thenReturn(new InetSocketAddress("127.0.0.1", 12345));
+            RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.UPDATE_BROKER_CONFIG, null);
+            request.setBody(MixAll.properties2String(update).getBytes(StandardCharsets.UTF_8));
+            RemotingCommand response = new AdminBrokerProcessor(controller).processRequest(context, request);
+            assertThat(response.getCode()).isEqualTo(ResponseCode.SUCCESS);
 
             String logs = appender.list.stream().map(ILoggingEvent::getFormattedMessage)
                 .collect(Collectors.joining("\n"));
+            assertThat(appender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                .filter(message -> message.startsWith("updateBrokerConfig, new config:")).collect(Collectors.toList()))
+                .singleElement().asString()
+                .contains("initAuthenticationUser=******", "innerClientAuthenticationCredentials=******",
+                    "authenticationEnabled=true", "authenticationWhitelist=11, 12", "client: 127.0.0.1:12345");
             assertThat(logs).contains("Replace, key: initAuthenticationUser, value: ****** -> ******");
             assertThat(logs).contains("Replace, key: innerClientAuthenticationCredentials, value: ****** -> ******");
             assertThat(logs).doesNotContain(oldUser, newUser, oldCredentials, newCredentials,

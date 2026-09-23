@@ -36,6 +36,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 public class ConfigurationTest {
 
@@ -101,6 +102,50 @@ public class ConfigurationTest {
         assertThat(config.opaqueValue).isEqualTo("new-secret");
         assertThat(config.databasePassword).isEqualTo("new-password");
         assertThat(configuration.getAllConfigs().getProperty("opaqueValue")).isEqualTo("new-secret");
+    }
+
+    @Test
+    public void testPropertiesForLogMasksRegisteredFieldsWithoutChangingInput() {
+        Configuration configuration = new Configuration(mock(Logger.class), new AnnotatedConfig());
+        Properties properties = new Properties();
+        properties.setProperty("opaqueValue", "request-secret");
+        properties.setProperty("databasePassword", "ordinary-value");
+        properties.setProperty("unknownProperty", "unknown-value");
+
+        Properties masked = configuration.getPropertiesForLog(properties);
+
+        assertThat(masked).hasSize(3)
+            .containsEntry("opaqueValue", "******")
+            .containsEntry("databasePassword", "ordinary-value")
+            .containsEntry("unknownProperty", "unknown-value");
+        assertThat(properties).containsEntry("opaqueValue", "request-secret");
+        masked.setProperty("databasePassword", "changed-copy");
+        assertThat(properties).containsEntry("databasePassword", "ordinary-value");
+        assertThat(configuration.getAllConfigs()).containsEntry("opaqueValue", "old-secret");
+    }
+
+    @Test
+    public void testInterruptedRegistrationAndUpdateDoNotLogProperties() {
+        Logger logger = mock(Logger.class);
+        Configuration configuration = new Configuration(logger, new AnnotatedConfig());
+        Properties properties = new Properties();
+        properties.setProperty("opaqueValue", "request-secret");
+        String originalVersion = configuration.getDataVersionJson();
+
+        try {
+            Thread.currentThread().interrupt();
+            configuration.registerConfig(properties);
+            Thread.currentThread().interrupt();
+            configuration.update(properties);
+        } finally {
+            Thread.interrupted();
+        }
+
+        verify(logger).error("register config interrupted while waiting for lock");
+        verify(logger).error("update config interrupted while waiting for lock");
+        verifyNoMoreInteractions(logger);
+        assertThat(configuration.getAllConfigs()).containsEntry("opaqueValue", "old-secret");
+        assertThat(configuration.getDataVersionJson()).isEqualTo(originalVersion);
     }
 
     @Test

@@ -113,7 +113,7 @@ public class Configuration {
                 readWriteLock.writeLock().unlock();
             }
         } catch (InterruptedException e) {
-            log.error("register lock error. {}" + extProperties);
+            log.error("register config interrupted while waiting for lock");
         }
 
         return this;
@@ -196,11 +196,28 @@ public class Configuration {
                 readWriteLock.writeLock().unlock();
             }
         } catch (InterruptedException e) {
-            log.error("update lock error, {}", properties);
+            log.error("update config interrupted while waiting for lock");
             return;
         }
 
         persist();
+    }
+
+    /**
+     * Returns a logging-only copy with sensitive values masked using registered configuration metadata.
+     */
+    public Properties getPropertiesForLog(Properties properties) {
+        readWriteLock.readLock().lock();
+        try {
+            Properties masked = new Properties();
+            for (Entry<Object, Object> entry : properties.entrySet()) {
+                masked.put(entry.getKey(), ConfigLogUtils.getValueForLog(configObjectList,
+                    String.valueOf(entry.getKey()), entry.getValue()));
+            }
+            return masked;
+        } finally {
+            readWriteLock.readLock().unlock();
+        }
     }
 
     public void persist() {

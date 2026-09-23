@@ -17,6 +17,7 @@
 
 package org.apache.rocketmq.common.utils;
 
+import org.apache.rocketmq.common.ControllerConfig;
 import org.apache.rocketmq.common.annotation.Sensitive;
 import org.junit.Test;
 
@@ -35,6 +36,16 @@ public class ConfigLogUtilsTest {
 
         assertThat(ConfigLogUtils.getValueForLog(config, "opaqueValue", config.opaqueValue))
             .isEqualTo("******");
+    }
+
+    @Test
+    public void testControllerMetricsHeaderIsMaskedWithoutChangingConfiguration() {
+        ControllerConfig config = new ControllerConfig();
+        config.setMetricsGrpcExporterHeader("Authorization:secret-token");
+
+        assertThat(ConfigLogUtils.getValueForLog(config, "metricsGrpcExporterHeader",
+            config.getMetricsGrpcExporterHeader())).isEqualTo("******");
+        assertThat(config.getMetricsGrpcExporterHeader()).isEqualTo("Authorization:secret-token");
     }
 
     @Test
